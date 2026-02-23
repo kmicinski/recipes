@@ -1,5 +1,6 @@
 ---
 title: Cilantro "Crema"
+servings: 4
 tags: mexican, freezer
 ingredients:
   - name: egg yolk

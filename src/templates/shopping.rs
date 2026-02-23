@@ -1,18 +1,24 @@
 //! Shopping list builder and results template.
 
 use crate::models::{Recipe, ShoppingItem};
-use crate::recipes::html_escape;
-use crate::shopping::SavedTrip;
+use crate::recipes::{html_escape, js_single_quote_attr_escape};
+use crate::shopping::{instacart_search_url, SavedTrip};
 use crate::templates::base_html;
 
 /// Render the shopping list builder page (two-panel layout).
-pub fn render_shopping_page(recipes: &[Recipe], recent_trips: &[SavedTrip], logged_in: bool) -> String {
+pub fn render_shopping_page(
+    recipes: &[Recipe],
+    recent_trips: &[SavedTrip],
+    logged_in: bool,
+) -> String {
     let mut html = String::new();
 
     html.push_str("<h1>Shopping List</h1>");
 
     if recipes.is_empty() {
-        html.push_str(r#"<div class="empty-state"><p>No recipes yet. Create some recipes first!</p></div>"#);
+        html.push_str(
+            r#"<div class="empty-state"><p>No recipes yet. Create some recipes first!</p></div>"#,
+        );
         return base_html("Shopping List", &html, logged_in);
     }
 
@@ -55,13 +61,15 @@ pub fn render_shopping_page(recipes: &[Recipe], recent_trips: &[SavedTrip], logg
         for trip in recent_trips {
             let date = &trip.created_at[..10]; // YYYY-MM-DD
             let count = trip.items.len();
+            let recipe_count = trip.recipes.len();
             html.push_str(&format!(
                 r#"<div class="trip-row">
-                    <span>{date} &middot; {count} items</span>
+                    <span>{date} &middot; {count} items &middot; {recipe_count} recipes</span>
                     <a href="/shopping/trip/{id}" class="btn small secondary">View</a>
                 </div>"#,
                 date = html_escape(date),
                 count = count,
+                recipe_count = recipe_count,
                 id = html_escape(&trip.id),
             ));
         }
@@ -87,13 +95,18 @@ pub fn render_shopping_page(recipes: &[Recipe], recent_trips: &[SavedTrip], logg
         inp.addEventListener('input', scheduleRebuild);
     });
 
-    async function rebuildList() {
+    function collectSelections() {
         const selections = [];
         document.querySelectorAll('.shop-cb:checked').forEach(cb => {
             const key = cb.dataset.key;
             const qty = parseFloat(document.getElementById('qty-' + key).value) || 1;
             selections.push({ key: key, multiplier: qty });
         });
+        return selections;
+    }
+
+    async function rebuildList() {
+        const selections = collectSelections();
 
         if (selections.length === 0) {
             document.getElementById('shopping-results').innerHTML =
@@ -155,7 +168,21 @@ pub fn render_shopping_page(recipes: &[Recipe], recent_trips: &[SavedTrip], logg
         } catch (e) { alert('Error: ' + e.message); }
     }
 
+    // Auto-select recipe from ?add= query param
+    (function() {
+        const params = new URLSearchParams(window.location.search);
+        const addKey = params.get('add');
+        if (addKey) {
+            const cb = document.getElementById('sel-' + addKey);
+            if (cb && !cb.checked) {
+                cb.checked = true;
+                rebuildList();
+            }
+        }
+    })();
+
     async function saveTrip() {
+        const selections = collectSelections();
         const items = [];
         document.querySelectorAll('.shopping-item').forEach(el => {
             const nameEl = el.querySelector('.shopping-item-name');
@@ -178,12 +205,11 @@ pub fn render_shopping_page(recipes: &[Recipe], recent_trips: &[SavedTrip], logg
             const resp = await fetch('/api/shopping/save-trip', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ items: items })
+                body: JSON.stringify({ items: items, selections: selections })
             });
             if (!resp.ok) { alert('Error saving trip'); return; }
             const data = await resp.json();
-            alert('Trip saved!');
-            location.reload();
+            window.location.href = '/shopping/trip/' + encodeURIComponent(data.id);
         } catch (e) { alert('Error: ' + e.message); }
     }
     </script>"#);
@@ -205,7 +231,9 @@ pub fn render_shopping_results(items: &[ShoppingItem]) -> String {
     // Action buttons
     html.push_str(r#"<div style="margin-bottom:1rem;display:flex;gap:0.5rem">"#);
     if !need.is_empty() {
-        html.push_str(r#"<button class="btn small" onclick="addAllToPantry()">Add all to pantry</button>"#);
+        html.push_str(
+            r#"<button class="btn small" onclick="addAllToPantry()">Add all to pantry</button>"#,
+        );
     }
     html.push_str(r#"<button class="btn small secondary" onclick="saveTrip()">Save Trip</button>"#);
     html.push_str("</div>");
@@ -258,7 +286,7 @@ fn render_shopping_item(html: &mut String, item: &ShoppingItem) {
     };
 
     let escaped_name = html_escape(&item.name);
-    let js_name = item.name.replace('\\', "\\\\").replace('\'', "\\'");
+    let js_name = js_single_quote_attr_escape(&item.name);
 
     html.push_str(&format!(
         r#"<div class="{class}">
@@ -290,18 +318,60 @@ pub fn render_trip_page(trip: &SavedTrip, logged_in: bool) -> String {
         html_escape(date)
     ));
 
+    if !trip.recipes.is_empty() {
+        html.push_str(&format!(
+            "<h2>Recipes for This Trip ({})</h2>",
+            trip.recipes.len()
+        ));
+        html.push_str(r#"<ul class="trip-recipes">"#);
+        for recipe in &trip.recipes {
+            html.push_str(&format!(
+                r#"<li>
+                    <a href="/recipe/{key}?from_trip={trip_id}">{title}</a>
+                    <span class="trip-recipe-meta">&times;{multiplier}</span>
+                </li>"#,
+                key = html_escape(&recipe.key),
+                trip_id = html_escape(&trip.id),
+                title = html_escape(&recipe.title),
+                multiplier = format_multiplier(recipe.multiplier),
+            ));
+        }
+        html.push_str("</ul>");
+    } else {
+        html.push_str(
+            r#"<p style="color:var(--muted);margin-bottom:1rem">No recipe selections were saved for this trip.</p>"#,
+        );
+    }
+
     let need: Vec<&ShoppingItem> = trip.items.iter().filter(|i| !i.in_pantry).collect();
     let have: Vec<&ShoppingItem> = trip.items.iter().filter(|i| i.in_pantry).collect();
 
     if !need.is_empty() {
+        let js_trip_id = js_single_quote_attr_escape(&trip.id);
         html.push_str(&format!("<h2>Need to Buy ({})</h2>", need.len()));
+        html.push_str(&format!(
+            r#"<div class="trip-actions">
+                <button class="btn small" onclick="openInstacartCart('{trip_id}', this)">Open Instacart Cart</button>
+            </div>"#,
+            trip_id = js_trip_id,
+        ));
+        html.push_str(
+            r#"<p class="instacart-note">We generate a shoppable Instacart cart for this trip. If matching is imperfect, use row-level search links.</p>"#,
+        );
         html.push_str(r#"<ul class="trip-list">"#);
         for item in &need {
+            let instacart_url = instacart_search_url(&item.name);
             html.push_str(&format!(
-                "<li><strong>{}</strong> &middot; {} {}</li>",
+                r#"<li class="trip-buy-row">
+                    <div class="trip-item-copy">
+                        <strong>{}</strong> &middot; {} {}
+                    </div>
+                    <a href="{}" target="_blank" rel="noopener" class="btn small secondary">Search Item</a>
+                </li>"#,
                 html_escape(&item.name),
-                item.qty,
+                format_multiplier(item.qty),
                 html_escape(&item.unit),
+                html_escape(&instacart_url),
             ));
         }
         html.push_str("</ul>");
@@ -325,7 +395,48 @@ pub fn render_trip_page(trip: &SavedTrip, logged_in: bool) -> String {
     }
 
     html.push_str(r#"<div style="margin-top:1.5rem"><a href="/shopping" class="btn secondary">Back to Shopping</a></div>"#);
+    html.push_str(
+        r#"<script>
+    async function openInstacartCart(tripId, btn) {
+        const oldText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = 'Opening...';
+        try {
+            const resp = await fetch('/api/instacart/trip/' + encodeURIComponent(tripId), {
+                method: 'POST'
+            });
+            if (!resp.ok) {
+                const msg = (await resp.text()) || 'Could not create Instacart cart.';
+                alert(msg);
+                return;
+            }
+            const data = await resp.json();
+            if (!data.products_link_url) {
+                alert('Instacart did not return a cart URL.');
+                return;
+            }
+            window.open(data.products_link_url, '_blank', 'noopener');
+        } catch (e) {
+            alert('Instacart error: ' + e.message);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = oldText;
+        }
+    }
+    </script>"#,
+    );
     html.push_str("</div>");
 
     base_html("Shopping Trip", &html, logged_in)
+}
+
+fn format_multiplier(value: f64) -> String {
+    if value.fract().abs() < f64::EPSILON {
+        format!("{}", value as i64)
+    } else {
+        format!("{:.2}", value)
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
+    }
 }

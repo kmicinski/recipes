@@ -115,7 +115,11 @@ pub fn parse_frontmatter(content: &str) -> (Frontmatter, String) {
                     "title" => fm.title = Some(value.to_string()),
                     "servings" => fm.servings = value.parse().ok(),
                     "tags" => {
-                        fm.tags = value.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
+                        fm.tags = value
+                            .split(',')
+                            .map(|t| t.trim().to_string())
+                            .filter(|t| !t.is_empty())
+                            .collect();
                     }
                     "ingredients" => {
                         in_ingredients = true;
@@ -179,10 +183,7 @@ pub fn serialize_recipe(
 
 /// Generate a unique key from a file path (first 6 hex chars of SHA-256).
 pub fn generate_key(path: &PathBuf) -> String {
-    let relative = path
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
+    let relative = path.to_string_lossy().replace('\\', "/");
     let mut hasher = Sha256::new();
     hasher.update(relative.as_bytes());
     let hash = hasher.finalize();
@@ -195,6 +196,28 @@ pub fn html_escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+/// Escape for a JavaScript single-quoted string literal.
+pub fn js_single_quote_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '\'' => out.push_str("\\'"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// Escape for embedding a JS single-quoted string inside an HTML attribute.
+pub fn js_single_quote_attr_escape(s: &str) -> String {
+    html_escape(&js_single_quote_escape(s))
 }
 
 /// Render markdown body to sanitized HTML.
@@ -248,10 +271,7 @@ pub fn load_recipe(path: &PathBuf, content_dir: &PathBuf) -> Option<Recipe> {
 pub fn load_all_recipes(content_dir: &PathBuf) -> Vec<Recipe> {
     let mut recipes = Vec::new();
 
-    for entry in WalkDir::new(content_dir)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
+    for entry in WalkDir::new(content_dir).into_iter().filter_map(|e| e.ok()) {
         let path = entry.path().to_path_buf();
         if path.extension().and_then(|e| e.to_str()) == Some("md") {
             if let Some(recipe) = load_recipe(&path, content_dir) {
@@ -421,8 +441,28 @@ ingredients:
 
     #[test]
     fn test_parse_fractional_qty() {
-        let content = "---\ntitle: Tea\ningredients:\n  - name: honey\n    qty: 0.5\n    unit: tbsp\n---\n";
+        let content =
+            "---\ntitle: Tea\ningredients:\n  - name: honey\n    qty: 0.5\n    unit: tbsp\n---\n";
         let (fm, _) = parse_frontmatter(content);
         assert_eq!(fm.ingredients[0].qty, 0.5);
+    }
+
+    #[test]
+    fn test_js_single_quote_escape() {
+        let escaped = js_single_quote_escape("O'Reilly\\n");
+        assert_eq!(escaped, "O\\'Reilly\\\\n");
+    }
+
+    #[test]
+    fn test_js_single_quote_attr_escape() {
+        let escaped = js_single_quote_attr_escape("x'\"<y");
+        assert_eq!(escaped, "x\\'&quot;&lt;y");
+    }
+
+    #[test]
+    fn test_generate_key_uses_path_not_only_filename() {
+        let a = PathBuf::from("dir-a/recipe.md");
+        let b = PathBuf::from("dir-b/recipe.md");
+        assert_ne!(generate_key(&a), generate_key(&b));
     }
 }

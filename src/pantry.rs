@@ -18,7 +18,8 @@ pub fn has(db: &Db, name: &str) -> bool {
         Ok(t) => t,
         Err(_) => return false,
     };
-    tree.contains_key(normalize(name).as_bytes()).unwrap_or(false)
+    tree.contains_key(normalize(name).as_bytes())
+        .unwrap_or(false)
 }
 
 /// Add an ingredient to the pantry.
@@ -158,7 +159,11 @@ mod tests {
     #[test]
     fn test_list() {
         let db = temp_db();
-        bulk_add(&db, &vec!["zucchini".into(), "apple".into(), "banana".into()]).unwrap();
+        bulk_add(
+            &db,
+            &vec!["zucchini".into(), "apple".into(), "banana".into()],
+        )
+        .unwrap();
         let items = list(&db);
         assert_eq!(items, vec!["apple", "banana", "zucchini"]);
     }

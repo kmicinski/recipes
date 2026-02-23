@@ -1,6 +1,6 @@
 //! Pantry management page template.
 
-use crate::recipes::html_escape;
+use crate::recipes::{html_escape, js_single_quote_attr_escape};
 use crate::templates::base_html;
 
 pub fn render_pantry_page(items: &[String], logged_in: bool) -> String {
@@ -24,7 +24,7 @@ pub fn render_pantry_page(items: &[String], logged_in: bool) -> String {
         ));
         html.push_str(r#"<ul class="pantry-list" id="pantry-list">"#);
         for item in items {
-            let js_name = item.replace('\\', "\\\\").replace('\'', "\\'");
+            let js_name = js_single_quote_attr_escape(item);
             html.push_str(&format!(
                 r#"<li class="pantry-item" id="pantry-{escaped}">
                     <span class="pantry-item-name">{name}</span>
@@ -38,7 +38,8 @@ pub fn render_pantry_page(items: &[String], logged_in: bool) -> String {
         html.push_str("</ul>");
     }
 
-    html.push_str(r#"<script>
+    html.push_str(
+        r#"<script>
     async function addToPantry() {
         const input = document.getElementById('pantry-new');
         const name = input.value.trim();
@@ -77,7 +78,8 @@ pub fn render_pantry_page(items: &[String], logged_in: bool) -> String {
             }
         } catch (e) { alert('Error: ' + e.message); }
     }
-    </script>"#);
+    </script>"#,
+    );
 
     base_html("Pantry", &html, logged_in)
 }

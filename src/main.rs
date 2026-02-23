@@ -12,28 +12,56 @@ async fn main() {
     let app = Router::new()
         // Core routes
         .route("/", get(handlers::index))
-        .route("/login", get(handlers::login_page).post(handlers::login_submit))
+        .route(
+            "/login",
+            get(handlers::login_page).post(handlers::login_submit),
+        )
         .route("/logout", get(handlers::logout))
         // Recipe routes
         .route("/new", get(handlers::new_recipe_page))
         .route("/recipe/{key}", get(handlers::view_recipe))
         .route("/recipe/{key}/edit", get(handlers::edit_recipe))
-        .route("/api/recipe", axum::routing::post(handlers::create_recipe_api))
+        .route(
+            "/api/recipe",
+            axum::routing::post(handlers::create_recipe_api),
+        )
         .route(
             "/api/recipe/{key}",
             axum::routing::post(handlers::save_recipe_api).delete(handlers::delete_recipe),
         )
         // Shopping routes
         .route("/shopping", get(handlers::shopping_page))
-        .route("/api/shopping/build", axum::routing::post(handlers::shopping_build))
-        .route("/api/shopping/to-pantry", axum::routing::post(handlers::shopping_to_pantry))
-        .route("/api/shopping/save-trip", axum::routing::post(handlers::save_trip_handler))
+        .route(
+            "/api/shopping/build",
+            axum::routing::post(handlers::shopping_build),
+        )
+        .route(
+            "/api/shopping/to-pantry",
+            axum::routing::post(handlers::shopping_to_pantry),
+        )
+        .route(
+            "/api/shopping/save-trip",
+            axum::routing::post(handlers::save_trip_handler),
+        )
+        .route(
+            "/api/instacart/trip/{id}",
+            axum::routing::post(handlers::instacart_trip_link_handler),
+        )
         .route("/shopping/trip/{id}", get(handlers::view_trip_handler))
         // Pantry routes
         .route("/pantry", get(handlers::pantry_page))
-        .route("/api/pantry/toggle", axum::routing::post(handlers::pantry_toggle))
-        .route("/api/pantry/bulk-add", axum::routing::post(handlers::pantry_bulk_add))
-        .route("/api/pantry/bulk-remove", axum::routing::post(handlers::pantry_bulk_remove))
+        .route(
+            "/api/pantry/toggle",
+            axum::routing::post(handlers::pantry_toggle),
+        )
+        .route(
+            "/api/pantry/bulk-add",
+            axum::routing::post(handlers::pantry_bulk_add),
+        )
+        .route(
+            "/api/pantry/bulk-remove",
+            axum::routing::post(handlers::pantry_bulk_remove),
+        )
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:7001")

@@ -41,12 +41,7 @@ pub fn render_recipe_list(recipes: &[Recipe], ready_info: &[ReadyInfo], logged_i
             let missing_tags: String = info
                 .missing
                 .iter()
-                .map(|m| {
-                    format!(
-                        r#"<span class="missing-tag">{}</span>"#,
-                        html_escape(m)
-                    )
-                })
+                .map(|m| format!(r#"<span class="missing-tag">{}</span>"#, html_escape(m)))
                 .collect();
             html.push_str(&format!(
                 r#"<div class="almost-item"><a href="/recipe/{key}">{title}</a> {tags}</div>"#,
@@ -75,9 +70,9 @@ pub fn render_recipe_list(recipes: &[Recipe], ready_info: &[ReadyInfo], logged_i
 
             html.push_str(&format!(
                 r#"<li class="recipe-item">
-                    <span>
-                        {tags}
+                    <span class="recipe-main">
                         <a href="/recipe/{key}" class="title">{title}</a>
+                        <span class="recipe-tags">{tags}</span>
                     </span>
                     <span class="meta">{modified}</span>
                 </li>"#,

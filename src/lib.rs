@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 pub mod auth;
 pub mod handlers;
+pub mod instacart;
 pub mod models;
 pub mod pantry;
 pub mod recipes;

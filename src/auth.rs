@@ -129,6 +129,9 @@ pub fn hex_encode(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_base64_roundtrip() {
@@ -145,6 +148,7 @@ mod tests {
 
     #[test]
     fn test_session_create_and_verify() {
+        let _guard = ENV_LOCK.lock().unwrap();
         env::set_var("RECIPES_PASSWORD", "test_secret_123");
         let token = create_session().unwrap();
         let secret = get_secret_key().unwrap();
@@ -154,6 +158,7 @@ mod tests {
 
     #[test]
     fn test_session_tampered() {
+        let _guard = ENV_LOCK.lock().unwrap();
         env::set_var("RECIPES_PASSWORD", "test_secret_456");
         let token = create_session().unwrap();
         let secret = get_secret_key().unwrap();

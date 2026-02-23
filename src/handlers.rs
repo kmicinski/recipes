@@ -5,14 +5,14 @@ use crate::models::{Ingredient, Recipe, RecipeSelection};
 use crate::recipes::{generate_key, git_commit, git_rm_commit, serialize_recipe};
 use crate::templates::{base_html, STYLE};
 use crate::validate_path_within;
-use crate::{pantry, shopping, AppState};
+use crate::{instacart, pantry, shopping, AppState};
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{header::SET_COOKIE, HeaderMap, StatusCode},
     response::{Html, IntoResponse, Redirect, Response},
 };
 use axum_extra::extract::CookieJar;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
 use std::sync::Arc;
@@ -74,8 +74,14 @@ pub async fn index(State(state): State<Arc<AppState>>, jar: CookieJar) -> Html<S
 // Recipe View
 // ============================================================================
 
+#[derive(Deserialize, Default)]
+pub struct RecipeViewQuery {
+    pub from_trip: Option<String>,
+}
+
 pub async fn view_recipe(
     Path(key): Path<String>,
+    Query(query): Query<RecipeViewQuery>,
     State(state): State<Arc<AppState>>,
     jar: CookieJar,
 ) -> Response {
@@ -85,14 +91,31 @@ pub async fn view_recipe(
     match recipes.into_iter().find(|r| r.key == key) {
         Some(recipe) => {
             let pantry_items: HashSet<String> = pantry::list(&state.db).into_iter().collect();
+            let (back_href, back_label) = match query.from_trip {
+                Some(trip_id) => (
+                    format!("/shopping/trip/{}", trip_id),
+                    "Back to Shopping Trip".to_string(),
+                ),
+                None => ("/".to_string(), "All recipes".to_string()),
+            };
             Html(crate::templates::recipe_view::render_recipe_view(
                 &recipe,
                 &pantry_items,
                 logged_in,
+                &back_href,
+                &back_label,
             ))
             .into_response()
         }
-        None => (StatusCode::NOT_FOUND, Html(base_html("Not Found", "<h1>Recipe not found</h1>", logged_in))).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Html(base_html(
+                "Not Found",
+                "<h1>Recipe not found</h1>",
+                logged_in,
+            )),
+        )
+            .into_response(),
     }
 }
 
@@ -112,11 +135,19 @@ pub async fn edit_recipe(
 
     let recipes = state.load_recipes();
     match recipes.into_iter().find(|r| r.key == key) {
-        Some(recipe) => {
-            Html(crate::templates::recipe_edit::render_recipe_editor(Some(&recipe)))
-                .into_response()
-        }
-        None => (StatusCode::NOT_FOUND, Html(base_html("Not Found", "<h1>Recipe not found</h1>", logged_in))).into_response(),
+        Some(recipe) => Html(crate::templates::recipe_edit::render_recipe_editor(Some(
+            &recipe,
+        )))
+        .into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Html(base_html(
+                "Not Found",
+                "<h1>Recipe not found</h1>",
+                logged_in,
+            )),
+        )
+            .into_response(),
     }
 }
 
@@ -155,17 +186,30 @@ pub async fn create_recipe_api(
     } else {
         data.title.clone()
     };
-    let filename = slugify(&title) + ".md";
-    let path = state.content_dir.join(&filename);
+    let path = unique_recipe_path(&state.content_dir, &title);
+    let filename = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| format!("{}.md", slugify(&title)));
 
     if let Err(e) = validate_path_within(&state.content_dir, &path) {
         return (StatusCode::BAD_REQUEST, e).into_response();
     }
 
-    let content = serialize_recipe(&title, data.servings, &data.tags, &data.ingredients, &data.instructions);
+    let content = serialize_recipe(
+        &title,
+        data.servings,
+        &data.tags,
+        &data.ingredients,
+        &data.instructions,
+    );
 
     if let Err(e) = fs::write(&path, &content) {
-        return (StatusCode::INTERNAL_SERVER_ERROR, format!("Write error: {}", e)).into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Write error: {}", e),
+        )
+            .into_response();
     }
 
     let content_dir = state.content_dir.clone();
@@ -212,10 +256,20 @@ pub async fn save_recipe_api(
     } else {
         data.title.clone()
     };
-    let content = serialize_recipe(&title, data.servings, &data.tags, &data.ingredients, &data.instructions);
+    let content = serialize_recipe(
+        &title,
+        data.servings,
+        &data.tags,
+        &data.ingredients,
+        &data.instructions,
+    );
 
     if let Err(e) = fs::write(&recipe.path, &content) {
-        return (StatusCode::INTERNAL_SERVER_ERROR, format!("Write error: {}", e)).into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Write error: {}", e),
+        )
+            .into_response();
     }
 
     let content_dir = state.content_dir.clone();
@@ -318,13 +372,17 @@ pub async fn shopping_to_pantry(
 #[derive(Deserialize)]
 pub struct SaveTripRequest {
     pub items: Vec<crate::models::ShoppingItem>,
+    #[serde(default)]
+    pub selections: Vec<RecipeSelection>,
 }
 
 pub async fn save_trip_handler(
     State(state): State<Arc<AppState>>,
     axum::Json(body): axum::Json<SaveTripRequest>,
 ) -> Response {
-    match shopping::save_trip(&state.db, &body.items) {
+    let recipes = state.load_recipes();
+    let trip_recipes = shopping::resolve_trip_recipes(&body.selections, &recipes);
+    match shopping::save_trip(&state.db, &body.items, &trip_recipes) {
         Ok(id) => axum::Json(serde_json::json!({ "id": id })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -337,14 +395,70 @@ pub async fn view_trip_handler(
 ) -> Response {
     let logged_in = is_logged_in(&jar);
     match shopping::load_trip(&state.db, &id) {
-        Some(trip) => {
-            Html(crate::templates::shopping::render_trip_page(&trip, logged_in)).into_response()
-        }
+        Some(trip) => Html(crate::templates::shopping::render_trip_page(
+            &trip, logged_in,
+        ))
+        .into_response(),
         None => (
             StatusCode::NOT_FOUND,
             Html(base_html("Not Found", "<h1>Trip not found</h1>", logged_in)),
         )
             .into_response(),
+    }
+}
+
+#[derive(Serialize)]
+pub struct InstacartTripLinkResponse {
+    pub products_link_url: String,
+    pub cached: bool,
+}
+
+pub async fn instacart_trip_link_handler(
+    Path(id): Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> Response {
+    let mut trip = match shopping::load_trip(&state.db, &id) {
+        Some(t) => t,
+        None => return (StatusCode::NOT_FOUND, "Trip not found").into_response(),
+    };
+
+    let fingerprint = instacart::trip_payload_fingerprint(&trip);
+    if let (Some(url), Some(cached_fp)) = (
+        trip.instacart_products_link_url.clone(),
+        trip.instacart_products_link_fingerprint.as_deref(),
+    ) {
+        if cached_fp == fingerprint {
+            return axum::Json(InstacartTripLinkResponse {
+                products_link_url: url,
+                cached: true,
+            })
+            .into_response();
+        }
+    }
+
+    match instacart::create_products_link_for_trip(&trip).await {
+        Ok(url) => {
+            trip.instacart_products_link_url = Some(url.clone());
+            trip.instacart_products_link_fingerprint = Some(fingerprint);
+            if let Err(e) = shopping::save_trip_record(&state.db, &trip) {
+                return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
+            }
+            axum::Json(InstacartTripLinkResponse {
+                products_link_url: url,
+                cached: false,
+            })
+            .into_response()
+        }
+        Err(err) => {
+            let status = if err.is_not_configured() {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else if matches!(err, instacart::InstacartError::InvalidTrip(_)) {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::BAD_GATEWAY
+            };
+            (status, err.as_message()).into_response()
+        }
     }
 }
 
@@ -355,7 +469,9 @@ pub async fn view_trip_handler(
 pub async fn pantry_page(State(state): State<Arc<AppState>>, jar: CookieJar) -> Html<String> {
     let logged_in = is_logged_in(&jar);
     let items = pantry::list(&state.db);
-    Html(crate::templates::pantry::render_pantry_page(&items, logged_in))
+    Html(crate::templates::pantry::render_pantry_page(
+        &items, logged_in,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -502,16 +618,63 @@ pub async fn logout() -> Response {
 fn slugify(s: &str) -> String {
     s.to_lowercase()
         .chars()
-        .map(|c| {
-            if c.is_alphanumeric() {
-                c
-            } else {
-                '-'
-            }
-        })
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
         .collect::<String>()
         .split('-')
         .filter(|s| !s.is_empty())
         .collect::<Vec<&str>>()
         .join("-")
+}
+
+fn unique_recipe_path(content_dir: &std::path::Path, title: &str) -> std::path::PathBuf {
+    let base_slug = {
+        let s = slugify(title);
+        if s.is_empty() {
+            "untitled".to_string()
+        } else {
+            s
+        }
+    };
+
+    for suffix in 0..1000 {
+        let filename = if suffix == 0 {
+            format!("{}.md", base_slug)
+        } else {
+            format!("{}-{}.md", base_slug, suffix)
+        };
+        let candidate = content_dir.join(filename);
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+
+    content_dir.join(format!(
+        "{}-{}.md",
+        base_slug,
+        chrono::Utc::now().timestamp()
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{slugify, unique_recipe_path};
+
+    #[test]
+    fn test_slugify_empty_title() {
+        assert_eq!(slugify("   "), "");
+    }
+
+    #[test]
+    fn test_unique_recipe_path_adds_suffix_when_needed() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = unique_recipe_path(dir.path(), "Tea");
+        std::fs::write(&first, "hello").unwrap();
+
+        let second = unique_recipe_path(dir.path(), "Tea");
+        let first_name = first.file_name().unwrap().to_string_lossy().to_string();
+        let second_name = second.file_name().unwrap().to_string_lossy().to_string();
+
+        assert_eq!(first_name, "tea.md");
+        assert_eq!(second_name, "tea-1.md");
+    }
 }

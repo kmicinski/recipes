@@ -1,31 +1,48 @@
 //! Single recipe view page.
 
 use crate::models::Recipe;
-use crate::recipes::html_escape;
+use crate::recipes::{html_escape, js_single_quote_attr_escape};
 use crate::templates::base_html;
 use std::collections::HashSet;
 
-pub fn render_recipe_view(recipe: &Recipe, pantry_items: &HashSet<String>, logged_in: bool) -> String {
+pub fn render_recipe_view(
+    recipe: &Recipe,
+    pantry_items: &HashSet<String>,
+    logged_in: bool,
+    back_href: &str,
+    back_label: &str,
+) -> String {
     let mut html = String::new();
 
-    html.push_str(r#"<a href="/" class="back-link">&larr; All recipes</a>"#);
+    html.push_str(&format!(
+        r#"<a href="{href}" class="back-link">&larr; {label}</a>"#,
+        href = html_escape(back_href),
+        label = html_escape(back_label),
+    ));
 
     // Header with edit/delete buttons
     html.push_str(r#"<div class="recipe-header">"#);
     html.push_str(&format!("<h1>{}</h1>", html_escape(&recipe.title)));
+    html.push_str(r#"<div class="mode-toggle">"#);
     if logged_in {
-        html.push_str(r#"<div class="mode-toggle">"#);
+        let js_key = js_single_quote_attr_escape(&recipe.key);
+        let js_title = js_single_quote_attr_escape(&recipe.title);
         html.push_str(&format!(
             r#"<a href="/recipe/{key}/edit">Edit</a>"#,
             key = recipe.key,
         ));
         html.push_str(&format!(
             r#"<button onclick="confirmDelete('{key}', '{title}')">Delete</button>"#,
-            key = recipe.key,
-            title = html_escape(&recipe.title).replace('\'', "\\'"),
+            key = js_key,
+            title = js_title,
         ));
-        html.push_str("</div>");
     }
+    html.push_str(&format!(
+        r#"<a href="/shopping?add={key}">+ Shopping</a>"#,
+        key = recipe.key,
+    ));
+    html.push_str(r#"<button onclick="window.print()">Print</button>"#);
+    html.push_str("</div>");
     html.push_str("</div>");
 
     // Meta block
@@ -62,7 +79,7 @@ pub fn render_recipe_view(recipe: &Recipe, pantry_items: &HashSet<String>, logge
         for ing in &recipe.ingredients {
             let norm = ing.name.trim().to_lowercase();
             let in_pantry = pantry_items.contains(&norm);
-            let js_name = ing.name.replace('\\', "\\\\").replace('\'', "\\'");
+            let js_name = js_single_quote_attr_escape(&ing.name);
 
             let badge = if in_pantry {
                 format!(
@@ -95,7 +112,8 @@ pub fn render_recipe_view(recipe: &Recipe, pantry_items: &HashSet<String>, logge
     }
 
     // JS for delete + pantry toggle
-    html.push_str(r#"<script>
+    html.push_str(
+        r#"<script>
     async function confirmDelete(key, title) {
         if (!confirm('Delete "' + title + '"?')) return;
         try {
@@ -128,7 +146,8 @@ pub fn render_recipe_view(recipe: &Recipe, pantry_items: &HashSet<String>, logge
             }
         } catch (e) { alert('Error: ' + e.message); }
     }
-    </script>"#);
+    </script>"#,
+    );
 
     base_html(&recipe.title, &html, logged_in)
 }

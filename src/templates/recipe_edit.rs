@@ -337,6 +337,30 @@ fn json_escape(s: &str) -> String {
         .replace('\n', "\\n")
         .replace('\r', "\\r")
         .replace('\t', "\\t")
+        .replace('&', "\\u0026")
+        .replace('<', "\\u003C")
+        .replace('>', "\\u003E")
+        .replace('\'', "\\u0027")
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::json_escape;
+
+    #[test]
+    fn test_json_escape_prevents_script_breakout() {
+        let escaped = json_escape("</script><script>alert(1)</script>");
+        assert!(!escaped.contains("</script>"));
+        assert!(escaped.contains("\\u003C/script\\u003E"));
+    }
+
+    #[test]
+    fn test_json_escape_handles_quotes_and_newlines() {
+        let escaped = json_escape("he said \"hi\"\nnext");
+        assert_eq!(escaped, "he said \\\"hi\\\"\\nnext");
+    }
 }
 
 const EDITOR_STYLE: &str = r#"
