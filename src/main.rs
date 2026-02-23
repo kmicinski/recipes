@@ -71,7 +71,9 @@ async fn main() {
     println!("Recipes server running at http://0.0.0.0:7001");
     println!("Content directory: {}", CONTENT_DIR);
 
-    if auth::is_auth_enabled() {
+    if std::env::var("TRUST_PROXY_AUTH").is_ok() {
+        println!("Authentication: PROXY (TRUST_PROXY_AUTH set, trusting reverse proxy)");
+    } else if auth::is_auth_enabled() {
         println!("Authentication: ENABLED (RECIPES_PASSWORD set)");
     } else {
         println!("Authentication: DISABLED (set RECIPES_PASSWORD env var to enable editing)");

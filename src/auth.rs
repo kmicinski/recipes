@@ -30,9 +30,15 @@ pub fn get_secret_key() -> Option<Vec<u8>> {
     env::var("RECIPES_PASSWORD").ok().map(|p| p.into_bytes())
 }
 
+/// Check if proxy-level auth is trusted (e.g., behind Authelia).
+/// When TRUST_PROXY_AUTH is set, all requests are treated as authenticated.
+fn trust_proxy_auth() -> bool {
+    env::var("TRUST_PROXY_AUTH").is_ok()
+}
+
 /// Check if authentication is enabled.
 pub fn is_auth_enabled() -> bool {
-    get_secret_key().is_some()
+    trust_proxy_auth() || get_secret_key().is_some()
 }
 
 /// Create a new session token.
@@ -98,6 +104,10 @@ pub fn verify_session(token: &str, secret: &[u8]) -> bool {
 
 /// Check if the user is logged in via cookie.
 pub fn is_logged_in(jar: &CookieJar) -> bool {
+    if trust_proxy_auth() {
+        return true;
+    }
+
     let secret = match get_secret_key() {
         Some(s) => s,
         None => return false,
