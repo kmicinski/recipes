@@ -21,9 +21,9 @@ ingredients:
   - name: vanilla extract
     qty: 2
     unit: tsp
-  - name: sour cream
+  - name: whole milk
     qty: 60
-    unit: g
+    unit: ml
   - name: all-purpose flour
     qty: 280
     unit: g
@@ -46,7 +46,7 @@ ingredients:
 1. Preheat oven to 350 F (175 C). Butter and flour a 9x5-inch loaf pan, or line with parchment paper.
 2. Mash the bananas in a large bowl — leave some small chunks for texture.
 3. Stir the melted butter into the mashed bananas.
-4. Mix in both sugars, then beat in the eggs one at a time. Stir in the vanilla and sour cream until smooth.
+4. Mix in both sugars, then beat in the eggs one at a time. Stir in the vanilla and milk until smooth.
 5. In a separate bowl, whisk together the flour, baking soda, salt, cinnamon, and nutmeg.
 6. Fold the dry ingredients into the wet ingredients gently — mix until *just* combined. A few streaks of flour are fine. Do not overmix or the bread will be tough.
 7. Pour the batter into the prepared pan and smooth the top.
@@ -56,7 +56,7 @@ ingredients:
 ## Notes
 
 - The bananas should be very ripe — brown/black spotted skins give the best flavor and sweetness.
-- The sour cream is the secret to keeping it incredibly moist. Greek yogurt works as a substitute.
+- The milk keeps it moist. For extra richness, use buttermilk instead.
 - The brown sugar adds a deeper, almost caramel-like flavor compared to all white sugar.
 - For extra indulgence, add 100g of chocolate chips or 75g of toasted walnuts folded into the batter at step 6.
 - Stores well wrapped tightly at room temperature for 3 days, or freeze slices for up to 3 months.
