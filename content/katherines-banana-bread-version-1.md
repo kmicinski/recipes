@@ -7,14 +7,14 @@ ingredients:
     qty: 4
     unit: whole
   - name: unsalted butter (melted)
-    qty: 115
-    unit: g
+    qty: 0.5
+    unit: cup
   - name: granulated sugar
-    qty: 150
-    unit: g
+    qty: 0.75
+    unit: cup
   - name: light brown sugar (packed)
-    qty: 65
-    unit: g
+    qty: 0.33
+    unit: cup
   - name: eggs
     qty: 2
     unit: whole
@@ -22,11 +22,11 @@ ingredients:
     qty: 2
     unit: tsp
   - name: whole milk
-    qty: 60
-    unit: ml
+    qty: 0.25
+    unit: cup
   - name: all-purpose flour
-    qty: 280
-    unit: g
+    qty: 2
+    unit: cup
   - name: baking soda
     qty: 1
     unit: tsp
@@ -43,7 +43,7 @@ ingredients:
 
 ## Instructions
 
-1. Preheat oven to 350 F (175 C). Butter and flour a 9x5-inch loaf pan, or line with parchment paper.
+1. Preheat oven to 350 F. Butter and flour a 9x5-inch loaf pan, or line with parchment paper.
 2. Mash the bananas in a large bowl — leave some small chunks for texture.
 3. Stir the melted butter into the mashed bananas.
 4. Mix in both sugars, then beat in the eggs one at a time. Stir in the vanilla and milk until smooth.
@@ -58,5 +58,5 @@ ingredients:
 - The bananas should be very ripe — brown/black spotted skins give the best flavor and sweetness.
 - The milk keeps it moist. For extra richness, use buttermilk instead.
 - The brown sugar adds a deeper, almost caramel-like flavor compared to all white sugar.
-- For extra indulgence, add 100g of chocolate chips or 75g of toasted walnuts folded into the batter at step 6.
+- For extra indulgence, add 2/3 cup chocolate chips or 3/4 cup toasted walnuts folded into the batter at step 6.
 - Stores well wrapped tightly at room temperature for 3 days, or freeze slices for up to 3 months.
