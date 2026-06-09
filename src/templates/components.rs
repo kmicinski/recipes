@@ -34,6 +34,32 @@ pub fn nav_bar(logged_in: bool) -> String {
     )
 }
 
+/// A persistent "go to active shopping trip" banner. It's empty on the server
+/// and filled in by a small client script that polls `/api/trip/active`, so it
+/// shows on every page (and reflects live progress) until the trip is closed.
+/// It hides itself on the trip's own page.
+pub fn active_trip_banner() -> &'static str {
+    r#"<div id="active-trip-banner" class="active-trip-banner" hidden></div>
+<script>
+(function() {
+    var el = document.getElementById('active-trip-banner');
+    if (!el) return;
+    fetch('/api/trip/active', { headers: { 'Accept': 'application/json' } })
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .then(function(d) {
+            if (!d || !d.active) return;
+            var path = '/shopping/trip/' + encodeURIComponent(d.id);
+            // Don't show the banner while you're already on the trip page.
+            if (window.location.pathname === path) return;
+            var progress = (d.total > 0) ? (' · ' + d.done + '/' + d.total + ' picked up') : '';
+            el.innerHTML = '<a href="' + path + '">🛒 Go to active shopping trip' + progress + ' →</a>';
+            el.hidden = false;
+        })
+        .catch(function() { /* offline: just leave the banner hidden */ });
+})();
+</script>"#
+}
+
 pub fn base_html(title: &str, content: &str, logged_in: bool) -> String {
     format!(
         r#"<!DOCTYPE html>
@@ -46,6 +72,7 @@ pub fn base_html(title: &str, content: &str, logged_in: bool) -> String {
 </head>
 <body>
     {nav}
+    {banner}
     <div class="container">
         {content}
     </div>
@@ -53,5 +80,6 @@ pub fn base_html(title: &str, content: &str, logged_in: bool) -> String {
 </html>"#,
         title = html_escape(title),
         nav = nav_bar(logged_in),
+        banner = active_trip_banner(),
     )
 }

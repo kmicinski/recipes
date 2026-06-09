@@ -10,6 +10,14 @@ use sled::Db;
 use std::collections::{BTreeMap, HashMap};
 
 const TRIPS_TREE: &str = "shopping_trips";
+const PUBLISHED_TREE: &str = "published_trips";
+const META_TREE: &str = "trip_meta";
+const ACTIVE_TRIP_KEY: &[u8] = b"active_trip";
+
+/// Alphabet for short trip slugs. Excludes ambiguous characters (0/O, 1/l/I)
+/// so links are easy to read aloud and retype.
+const SLUG_ALPHABET: &[u8] = b"abcdefghijkmnpqrstuvwxyz23456789";
+const SLUG_LEN: usize = 6;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TripRecipe {
@@ -28,7 +36,46 @@ pub struct SavedTrip {
     pub instacart_products_link_url: Option<String>,
     #[serde(default)]
     pub instacart_products_link_fingerprint: Option<String>,
+    /// Item keys (see [`item_key`]) that have been checked off while shopping.
+    /// Persisted on every toggle so a page refresh restores progress.
+    #[serde(default)]
+    pub checked: Vec<String>,
+    /// Once shopping is done the trip is closed: it stops being the active
+    /// trip and the "go to active trip" banner disappears.
+    #[serde(default)]
+    pub closed: bool,
     pub created_at: String,
+}
+
+/// Stable identity for a shopping-list item within a trip, used to track
+/// check-off state independently of display formatting. Matches the
+/// (normalized name, unit) aggregation key used when the list is built.
+pub fn item_key(item: &ShoppingItem) -> String {
+    format!(
+        "{}::{}",
+        item.name.trim().to_lowercase(),
+        item.unit.trim().to_lowercase()
+    )
+}
+
+impl SavedTrip {
+    /// Whether the given item key is currently checked off.
+    pub fn is_checked(&self, key: &str) -> bool {
+        self.checked.iter().any(|k| k == key)
+    }
+
+    /// Count of distinct buyable (not-in-pantry) items.
+    pub fn buy_total(&self) -> usize {
+        self.items.iter().filter(|i| !i.in_pantry).count()
+    }
+
+    /// Count of buyable items that have been checked off.
+    pub fn buy_done(&self) -> usize {
+        self.items
+            .iter()
+            .filter(|i| !i.in_pantry && self.is_checked(&item_key(i)))
+            .count()
+    }
 }
 
 fn normalized_multiplier(multiplier: f64) -> f64 {
@@ -82,10 +129,104 @@ pub fn save_trip(
         recipes: recipes.to_vec(),
         instacart_products_link_url: None,
         instacart_products_link_fingerprint: None,
+        checked: Vec::new(),
+        closed: false,
         created_at: now.to_rfc3339(),
     };
     save_trip_record(db, &trip)?;
     Ok(id)
+}
+
+// ============================================================================
+// Active trip + check-off state
+// ============================================================================
+
+/// Mark a trip as the single "active" trip — the one shown by the persistent
+/// banner at the top of every page until it is closed.
+pub fn set_active_trip(db: &Db, id: &str) -> Result<(), String> {
+    let tree = db
+        .open_tree(META_TREE)
+        .map_err(|e| format!("DB error: {}", e))?;
+    tree.insert(ACTIVE_TRIP_KEY, id.as_bytes())
+        .map_err(|e| format!("DB error: {}", e))?;
+    Ok(())
+}
+
+/// Clear the active-trip pointer (no trip is active).
+pub fn clear_active_trip(db: &Db) -> Result<(), String> {
+    let tree = db
+        .open_tree(META_TREE)
+        .map_err(|e| format!("DB error: {}", e))?;
+    tree.remove(ACTIVE_TRIP_KEY)
+        .map_err(|e| format!("DB error: {}", e))?;
+    Ok(())
+}
+
+/// The raw active-trip id pointer, if set.
+pub fn active_trip_id(db: &Db) -> Option<String> {
+    let tree = db.open_tree(META_TREE).ok()?;
+    let bytes = tree.get(ACTIVE_TRIP_KEY).ok()??;
+    String::from_utf8(bytes.to_vec()).ok()
+}
+
+/// The current active trip, if there is one that still exists and is open.
+/// Self-heals: a pointer to a missing or closed trip is cleared and treated as
+/// "no active trip".
+pub fn active_trip(db: &Db) -> Option<SavedTrip> {
+    let id = active_trip_id(db)?;
+    match load_trip(db, &id) {
+        Some(trip) if !trip.closed => Some(trip),
+        _ => {
+            clear_active_trip(db).ok();
+            None
+        }
+    }
+}
+
+/// Check or uncheck a single item on a trip. Returns `false` if the trip does
+/// not exist. Idempotent.
+pub fn set_item_checked(
+    db: &Db,
+    trip_id: &str,
+    key: &str,
+    checked: bool,
+) -> Result<bool, String> {
+    let Some(mut trip) = load_trip(db, trip_id) else {
+        return Ok(false);
+    };
+    let present = trip.checked.iter().any(|k| k == key);
+    if checked && !present {
+        trip.checked.push(key.to_string());
+    } else if !checked && present {
+        trip.checked.retain(|k| k != key);
+    }
+    save_trip_record(db, &trip)?;
+    Ok(true)
+}
+
+/// Close a trip (shopping done). Marks it closed and clears the active pointer
+/// if it pointed here. Returns `false` if the trip does not exist.
+pub fn close_trip(db: &Db, trip_id: &str) -> Result<bool, String> {
+    let Some(mut trip) = load_trip(db, trip_id) else {
+        return Ok(false);
+    };
+    trip.closed = true;
+    save_trip_record(db, &trip)?;
+    if active_trip_id(db).as_deref() == Some(trip_id) {
+        clear_active_trip(db)?;
+    }
+    Ok(true)
+}
+
+/// Reopen a closed trip and make it active again.
+pub fn reopen_trip(db: &Db, trip_id: &str) -> Result<bool, String> {
+    let Some(mut trip) = load_trip(db, trip_id) else {
+        return Ok(false);
+    };
+    trip.closed = false;
+    save_trip_record(db, &trip)?;
+    set_active_trip(db, trip_id)?;
+    Ok(true)
 }
 
 /// Insert or update a saved trip record.
@@ -121,6 +262,119 @@ pub fn list_trips(db: &Db) -> Vec<SavedTrip> {
     trips.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     trips.truncate(10);
     trips
+}
+
+// ============================================================================
+// Published trip pages (durable, short-link browsable)
+// ============================================================================
+
+/// A self-contained snapshot of one recipe as it appeared when a trip was
+/// published. Storing ingredients + rendered prep here makes the published
+/// page durable: it keeps working even if the underlying recipe is later
+/// edited or deleted.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RecipeCard {
+    pub key: String,
+    pub title: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub multiplier: f64,
+    pub ingredients: Vec<Ingredient>,
+    /// Pre-rendered, sanitized HTML of the recipe's instructions body.
+    pub body_html: String,
+}
+
+/// A published shopping-trip "mini website" addressed by a short slug.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublishedTrip {
+    pub slug: String,
+    pub title: String,
+    /// Optional pre-rendered, sanitized HTML intro/notes (may be empty).
+    #[serde(default)]
+    pub notes_html: String,
+    pub items: Vec<ShoppingItem>,
+    pub cards: Vec<RecipeCard>,
+    pub created_at: String,
+}
+
+/// Generate a random short slug not already present in the published tree.
+fn generate_slug(db: &Db) -> Result<String, String> {
+    use rand::Rng;
+    let tree = db
+        .open_tree(PUBLISHED_TREE)
+        .map_err(|e| format!("DB error: {}", e))?;
+    let mut rng = rand::thread_rng();
+    // A handful of attempts is plenty; the keyspace is 32^6 ≈ 1 billion.
+    for _ in 0..16 {
+        let slug: String = (0..SLUG_LEN)
+            .map(|_| SLUG_ALPHABET[rng.gen_range(0..SLUG_ALPHABET.len())] as char)
+            .collect();
+        if !tree.contains_key(slug.as_bytes()).unwrap_or(false) {
+            return Ok(slug);
+        }
+    }
+    Err("could not allocate a unique slug".to_string())
+}
+
+/// Publish a durable trip page. Returns the generated slug.
+pub fn publish_trip(
+    db: &Db,
+    title: &str,
+    notes_html: &str,
+    items: &[ShoppingItem],
+    cards: &[RecipeCard],
+    created_at: &str,
+) -> Result<String, String> {
+    let slug = generate_slug(db)?;
+    let trip = PublishedTrip {
+        slug: slug.clone(),
+        title: title.to_string(),
+        notes_html: notes_html.to_string(),
+        items: items.to_vec(),
+        cards: cards.to_vec(),
+        created_at: created_at.to_string(),
+    };
+    let tree = db
+        .open_tree(PUBLISHED_TREE)
+        .map_err(|e| format!("DB error: {}", e))?;
+    let value = serde_json::to_vec(&trip).map_err(|e| format!("Serialize error: {}", e))?;
+    tree.insert(slug.as_bytes(), value)
+        .map_err(|e| format!("DB error: {}", e))?;
+    Ok(slug)
+}
+
+/// Load a published trip by slug.
+pub fn load_published(db: &Db, slug: &str) -> Option<PublishedTrip> {
+    let tree = db.open_tree(PUBLISHED_TREE).ok()?;
+    let bytes = tree.get(slug.as_bytes()).ok()??;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// List published trips, most recent first.
+pub fn list_published(db: &Db) -> Vec<PublishedTrip> {
+    let tree = match db.open_tree(PUBLISHED_TREE) {
+        Ok(t) => t,
+        Err(_) => return Vec::new(),
+    };
+    let mut trips: Vec<PublishedTrip> = tree
+        .iter()
+        .filter_map(|r| r.ok())
+        .filter_map(|(_, v)| serde_json::from_slice(&v).ok())
+        .collect();
+    trips.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    trips
+}
+
+/// Delete a published trip by slug. Returns true if it existed.
+pub fn delete_published(db: &Db, slug: &str) -> Result<bool, String> {
+    let tree = db
+        .open_tree(PUBLISHED_TREE)
+        .map_err(|e| format!("DB error: {}", e))?;
+    let existed = tree
+        .remove(slug.as_bytes())
+        .map_err(|e| format!("DB error: {}", e))?
+        .is_some();
+    Ok(existed)
 }
 
 const INSTACART_STOP_WORDS: &[&str] = &[
@@ -580,6 +834,87 @@ mod tests {
     }
 
     #[test]
+    fn test_active_trip_lifecycle() {
+        let db = temp_db();
+        assert!(active_trip(&db).is_none());
+
+        let id = save_trip(&db, &[], &[]).unwrap();
+        set_active_trip(&db, &id).unwrap();
+        assert_eq!(active_trip(&db).map(|t| t.id), Some(id.clone()));
+
+        // Closing clears the active pointer.
+        assert!(close_trip(&db, &id).unwrap());
+        assert!(active_trip(&db).is_none());
+        assert!(load_trip(&db, &id).unwrap().closed);
+
+        // Reopening makes it active again.
+        assert!(reopen_trip(&db, &id).unwrap());
+        assert_eq!(active_trip(&db).map(|t| t.id), Some(id));
+    }
+
+    #[test]
+    fn test_active_trip_self_heals_dangling_pointer() {
+        let db = temp_db();
+        set_active_trip(&db, "trip_does_not_exist").unwrap();
+        assert!(active_trip(&db).is_none());
+        // The dangling pointer was cleared.
+        assert!(active_trip_id(&db).is_none());
+    }
+
+    #[test]
+    fn test_set_item_checked_persists() {
+        let db = temp_db();
+        let item = ShoppingItem {
+            name: "Whole Milk".into(),
+            qty: 1.0,
+            unit: "carton".into(),
+            in_pantry: false,
+            sources: vec![],
+        };
+        let key = item_key(&item);
+        let id = save_trip(&db, std::slice::from_ref(&item), &[]).unwrap();
+
+        assert!(set_item_checked(&db, &id, &key, true).unwrap());
+        let trip = load_trip(&db, &id).unwrap();
+        assert!(trip.is_checked(&key));
+        assert_eq!(trip.buy_total(), 1);
+        assert_eq!(trip.buy_done(), 1);
+
+        // Idempotent: checking again does not duplicate.
+        set_item_checked(&db, &id, &key, true).unwrap();
+        assert_eq!(load_trip(&db, &id).unwrap().checked.len(), 1);
+
+        // Unchecking removes it.
+        set_item_checked(&db, &id, &key, false).unwrap();
+        assert!(!load_trip(&db, &id).unwrap().is_checked(&key));
+    }
+
+    #[test]
+    fn test_set_item_checked_missing_trip() {
+        let db = temp_db();
+        assert!(!set_item_checked(&db, "nope", "k", true).unwrap());
+    }
+
+    #[test]
+    fn test_item_key_normalizes() {
+        let a = ShoppingItem {
+            name: "  Olive Oil ".into(),
+            qty: 2.0,
+            unit: "TBSP".into(),
+            in_pantry: false,
+            sources: vec![],
+        };
+        let b = ShoppingItem {
+            name: "olive oil".into(),
+            qty: 9.0,
+            unit: "tbsp".into(),
+            in_pantry: false,
+            sources: vec![],
+        };
+        assert_eq!(item_key(&a), item_key(&b));
+    }
+
+    #[test]
     fn test_load_legacy_trip_defaults_recipes_to_empty() {
         let db = temp_db();
         let tree = db.open_tree(TRIPS_TREE).unwrap();
@@ -595,6 +930,8 @@ mod tests {
         assert!(trip.recipes.is_empty());
         assert!(trip.instacart_products_link_url.is_none());
         assert!(trip.instacart_products_link_fingerprint.is_none());
+        assert!(trip.checked.is_empty());
+        assert!(!trip.closed);
     }
 
     #[test]
@@ -640,5 +977,80 @@ mod tests {
             loaded.instacart_products_link_fingerprint.as_deref(),
             Some("abc")
         );
+    }
+
+    fn sample_card() -> RecipeCard {
+        RecipeCard {
+            key: "abc123".into(),
+            title: "Pork Chili".into(),
+            tags: vec!["mexican".into(), "freezer".into()],
+            multiplier: 1.0,
+            ingredients: vec![Ingredient {
+                name: "pork shoulder".into(),
+                qty: 2.0,
+                unit: "lb".into(),
+            }],
+            body_html: "<p>Cook it.</p>".into(),
+        }
+    }
+
+    #[test]
+    fn test_publish_and_load_trip() {
+        let db = temp_db();
+        let items = vec![ShoppingItem {
+            name: "pork shoulder".into(),
+            qty: 2.0,
+            unit: "lb".into(),
+            in_pantry: false,
+            sources: vec!["Pork Chili".into()],
+        }];
+        let slug = publish_trip(
+            &db,
+            "Frozen Mexican Meal",
+            "<p>Cook day!</p>",
+            &items,
+            &[sample_card()],
+            "2026-06-02T12:00:00Z",
+        )
+        .unwrap();
+
+        assert_eq!(slug.len(), SLUG_LEN);
+        assert!(slug.bytes().all(|b| SLUG_ALPHABET.contains(&b)));
+
+        let loaded = load_published(&db, &slug).unwrap();
+        assert_eq!(loaded.title, "Frozen Mexican Meal");
+        assert_eq!(loaded.notes_html, "<p>Cook day!</p>");
+        assert_eq!(loaded.items.len(), 1);
+        assert_eq!(loaded.cards.len(), 1);
+        assert_eq!(loaded.cards[0].title, "Pork Chili");
+    }
+
+    #[test]
+    fn test_published_slugs_are_unique() {
+        let db = temp_db();
+        let a = publish_trip(&db, "A", "", &[], &[], "2026-06-02T12:00:00Z").unwrap();
+        let b = publish_trip(&db, "B", "", &[], &[], "2026-06-02T12:00:01Z").unwrap();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_list_published_newest_first() {
+        let db = temp_db();
+        publish_trip(&db, "Old", "", &[], &[], "2026-06-01T00:00:00Z").unwrap();
+        publish_trip(&db, "New", "", &[], &[], "2026-06-02T00:00:00Z").unwrap();
+        let trips = list_published(&db);
+        assert_eq!(trips.len(), 2);
+        assert_eq!(trips[0].title, "New");
+        assert_eq!(trips[1].title, "Old");
+    }
+
+    #[test]
+    fn test_delete_published() {
+        let db = temp_db();
+        let slug = publish_trip(&db, "Gone", "", &[], &[], "2026-06-02T00:00:00Z").unwrap();
+        assert!(delete_published(&db, &slug).unwrap());
+        assert!(load_published(&db, &slug).is_none());
+        // Deleting again reports it was already absent.
+        assert!(!delete_published(&db, &slug).unwrap());
     }
 }

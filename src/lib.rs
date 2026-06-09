@@ -5,9 +5,11 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
+pub mod aisle;
 pub mod auth;
 pub mod handlers;
 pub mod instacart;
+pub mod mcp;
 pub mod models;
 pub mod pantry;
 pub mod recipes;
@@ -22,6 +24,8 @@ pub const DB_PATH: &str = ".recipes_db";
 pub struct AppState {
     pub content_dir: PathBuf,
     pub db: Db,
+    /// Bearer token for the `/mcp` endpoint. `None` disables MCP (returns 503).
+    pub mcp_token: Option<String>,
 }
 
 impl AppState {
@@ -31,7 +35,15 @@ impl AppState {
 
         let db = sled::open(DB_PATH).expect("Failed to open database");
 
-        Self { content_dir, db }
+        let mcp_token = std::env::var("RECIPES_MCP_TOKEN")
+            .ok()
+            .filter(|s| !s.is_empty());
+
+        Self {
+            content_dir,
+            db,
+            mcp_token,
+        }
     }
 
     pub fn load_recipes(&self) -> Vec<models::Recipe> {

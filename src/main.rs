@@ -3,7 +3,7 @@
 use axum::{routing::get, Router};
 use std::sync::Arc;
 
-use recipes::{auth, handlers, AppState, CONTENT_DIR};
+use recipes::{auth, handlers, mcp, AppState, CONTENT_DIR};
 
 #[tokio::main]
 async fn main() {
@@ -47,7 +47,29 @@ async fn main() {
             "/api/instacart/trip/{id}",
             axum::routing::post(handlers::instacart_trip_link_handler),
         )
+        // Active-trip checklist: check-off, close, and per-item aisle override
+        .route(
+            "/api/shopping/trip/{id}/check",
+            axum::routing::post(handlers::trip_check_handler),
+        )
+        .route(
+            "/api/shopping/trip/{id}/close",
+            axum::routing::post(handlers::close_trip_handler),
+        )
+        .route(
+            "/api/shopping/trip/{id}/reopen",
+            axum::routing::post(handlers::reopen_trip_handler),
+        )
+        .route(
+            "/api/shopping/section",
+            axum::routing::post(handlers::trip_section_handler),
+        )
+        .route("/api/trip/active", get(handlers::active_trip_handler))
         .route("/shopping/trip/{id}", get(handlers::view_trip_handler))
+        // Published trip pages: durable, short-link browsable per-trip "mini sites"
+        .route("/t/{slug}", get(handlers::view_published_trip))
+        // MCP endpoint (bearer-token auth via RECIPES_MCP_TOKEN; bypasses Authelia in Caddy)
+        .route("/mcp", axum::routing::post(mcp::mcp_handler))
         // Pantry routes
         .route("/pantry", get(handlers::pantry_page))
         .route(

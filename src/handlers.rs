@@ -383,7 +383,12 @@ pub async fn save_trip_handler(
     let recipes = state.load_recipes();
     let trip_recipes = shopping::resolve_trip_recipes(&body.selections, &recipes);
     match shopping::save_trip(&state.db, &body.items, &trip_recipes) {
-        Ok(id) => axum::Json(serde_json::json!({ "id": id })).into_response(),
+        Ok(id) => {
+            // A freshly saved trip becomes the active trip, so the "go to active
+            // trip" banner appears until shopping is closed out.
+            shopping::set_active_trip(&state.db, &id).ok();
+            axum::Json(serde_json::json!({ "id": id })).into_response()
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
@@ -396,12 +401,123 @@ pub async fn view_trip_handler(
     let logged_in = is_logged_in(&jar);
     match shopping::load_trip(&state.db, &id) {
         Some(trip) => Html(crate::templates::shopping::render_trip_page(
-            &trip, logged_in,
+            &state.db, &trip, logged_in,
         ))
         .into_response(),
         None => (
             StatusCode::NOT_FOUND,
             Html(base_html("Not Found", "<h1>Trip not found</h1>", logged_in)),
+        )
+            .into_response(),
+    }
+}
+
+/// JSON summary of the current active trip, polled by the header banner on
+/// every page. Returns `{ "active": false }` when there is none.
+pub async fn active_trip_handler(State(state): State<Arc<AppState>>) -> Response {
+    match shopping::active_trip(&state.db) {
+        Some(trip) => axum::Json(serde_json::json!({
+            "active": true,
+            "id": trip.id,
+            "done": trip.buy_done(),
+            "total": trip.buy_total(),
+        }))
+        .into_response(),
+        None => axum::Json(serde_json::json!({ "active": false })).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct TripCheckRequest {
+    pub key: String,
+    pub checked: bool,
+}
+
+/// Check or uncheck one item on a trip. Persists immediately so progress
+/// survives a page refresh.
+pub async fn trip_check_handler(
+    Path(id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    axum::Json(body): axum::Json<TripCheckRequest>,
+) -> Response {
+    match shopping::set_item_checked(&state.db, &id, &body.key, body.checked) {
+        Ok(true) => {
+            let trip = shopping::load_trip(&state.db, &id);
+            let (done, total) = trip
+                .map(|t| (t.buy_done(), t.buy_total()))
+                .unwrap_or((0, 0));
+            axum::Json(serde_json::json!({
+                "ok": true,
+                "done": done,
+                "total": total,
+            }))
+            .into_response()
+        }
+        Ok(false) => (StatusCode::NOT_FOUND, "Trip not found").into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+/// Close a trip (shopping done) — clears the active banner.
+pub async fn close_trip_handler(
+    Path(id): Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> Response {
+    match shopping::close_trip(&state.db, &id) {
+        Ok(true) => axum::Json(serde_json::json!({ "ok": true })).into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, "Trip not found").into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+/// Reopen a previously closed trip and make it active again.
+pub async fn reopen_trip_handler(
+    Path(id): Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> Response {
+    match shopping::reopen_trip(&state.db, &id) {
+        Ok(true) => axum::Json(serde_json::json!({ "ok": true })).into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, "Trip not found").into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct TripSectionRequest {
+    pub name: String,
+    pub section: String,
+}
+
+/// Override the store section an item is filed under. Persists across trips
+/// (keyed by ingredient name), so a correction sticks.
+pub async fn trip_section_handler(
+    State(state): State<Arc<AppState>>,
+    axum::Json(body): axum::Json<TripSectionRequest>,
+) -> Response {
+    match crate::aisle::set_override(&state.db, &body.name, &body.section) {
+        Ok(()) => axum::Json(serde_json::json!({ "ok": true })).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+    }
+}
+
+/// View a published trip page by its short slug (durable, browsable per-trip).
+pub async fn view_published_trip(
+    Path(slug): Path<String>,
+    State(state): State<Arc<AppState>>,
+    jar: CookieJar,
+) -> Response {
+    let logged_in = is_logged_in(&jar);
+    match shopping::load_published(&state.db, &slug) {
+        Some(trip) => {
+            Html(crate::templates::shopping::render_published_trip(&trip, logged_in)).into_response()
+        }
+        None => (
+            StatusCode::NOT_FOUND,
+            Html(base_html(
+                "Not Found",
+                "<h1>Trip not found</h1><p>This published trip link may have expired or been deleted.</p>",
+                logged_in,
+            )),
         )
             .into_response(),
     }

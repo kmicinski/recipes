@@ -250,6 +250,8 @@ mod tests {
             created_at: "2026-02-22T00:00:00Z".to_string(),
             instacart_products_link_url: None,
             instacart_products_link_fingerprint: None,
+            checked: Vec::new(),
+            closed: false,
         }
     }
 

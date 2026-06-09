@@ -697,6 +697,145 @@ h1 { font-size: 1.5rem; }
     }
 }
 
+.trip-item-sources {
+    color: var(--muted);
+    font-size: 0.8rem;
+    margin-top: 0.15rem;
+}
+
+.trip-notes { margin-bottom: 1.25rem; }
+
+.trip-recipe-card {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.75rem 1rem;
+    margin-bottom: 1rem;
+}
+
+.trip-recipe-card h3 {
+    font-size: 1.05rem;
+    margin: 0 0 0.25rem 0;
+}
+
+.trip-recipe-tags {
+    color: var(--muted);
+    font-size: 0.8rem;
+    margin-bottom: 0.5rem;
+}
+
+@media print {
+    .trip-recipe-card { page-break-inside: avoid; border: none; padding: 0; }
+}
+
+/* Active-trip banner (persistent "go to active trip" button) */
+.active-trip-banner {
+    position: sticky;
+    top: 0;
+    z-index: 99;
+    background: var(--green);
+    text-align: center;
+    padding: 0.5rem 1rem;
+}
+.active-trip-banner a {
+    color: var(--base3);
+    font-weight: 600;
+    font-size: 0.95rem;
+    text-decoration: none;
+}
+.active-trip-banner a:hover { text-decoration: underline; color: var(--base3); }
+
+/* Trip checklist: progress bar */
+.trip-progress-wrap { margin: 0.5rem 0 1rem; }
+.trip-progress {
+    height: 8px;
+    background: var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+}
+.trip-progress-bar {
+    height: 100%;
+    background: var(--green);
+    transition: width 0.2s ease;
+}
+.trip-progress-text {
+    font-size: 0.85rem;
+    color: var(--muted);
+    margin-top: 0.25rem;
+}
+
+/* Trip checklist: aisle groups */
+.aisle-group { margin-bottom: 1.25rem; }
+.aisle-heading {
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--base01);
+    border-bottom: 2px solid var(--border);
+    padding-bottom: 0.2rem;
+    margin: 1.25rem 0 0.4rem;
+}
+
+/* Trip checklist: checkable rows */
+.trip-check-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.45rem 0;
+    border-bottom: 1px solid var(--border);
+}
+.trip-check-row:last-child { border-bottom: none; }
+
+.trip-check-label {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.6rem;
+    flex: 1;
+    min-width: 0;
+    cursor: pointer;
+}
+.trip-check {
+    width: 22px;
+    height: 22px;
+    margin-top: 0.1rem;
+    cursor: pointer;
+    flex: none;
+    accent-color: var(--green);
+}
+.trip-check-body { min-width: 0; }
+.trip-check-name { font-weight: 500; }
+.trip-check-qty { color: var(--base01); font-size: 0.9rem; margin-left: 0.4rem; }
+
+.trip-check-row.checked .trip-check-name,
+.trip-check-row.checked .trip-check-qty { text-decoration: line-through; }
+.trip-check-row.checked { opacity: 0.55; }
+
+.trip-check-tools {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex: none;
+}
+.aisle-select {
+    font-size: 0.75rem;
+    padding: 0.15rem 0.25rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+    color: var(--muted);
+    font-family: inherit;
+    max-width: 9rem;
+}
+
+@media (max-width: 700px) {
+    .trip-check-row { flex-wrap: wrap; }
+    .trip-check-tools { width: 100%; padding-left: 1.9rem; }
+}
+
+@media print {
+    .active-trip-banner, .aisle-select, .trip-progress-wrap { display: none !important; }
+}
+
 @media print {
     .nav-bar, .fab, .btn, .mode-toggle, .back-link, .pantry-badge { display: none !important; }
     .container { max-width: 100%; padding: 0; }
