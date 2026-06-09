@@ -53,6 +53,10 @@ async fn main() {
             axum::routing::post(handlers::trip_check_handler),
         )
         .route(
+            "/api/shopping/trip/{id}/pantry",
+            axum::routing::post(handlers::trip_pantry_handler),
+        )
+        .route(
             "/api/shopping/trip/{id}/close",
             axum::routing::post(handlers::close_trip_handler),
         )

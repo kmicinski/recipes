@@ -405,11 +405,16 @@ pub fn render_trip_page(db: &Db, trip: &SavedTrip, logged_in: bool) -> String {
         ));
         html.push_str(r#"<ul class="trip-list">"#);
         for item in &have {
+            let key = item_key(item);
             html.push_str(&format!(
-                r#"<li style="color:var(--muted)">{} &middot; {} {}</li>"#,
-                html_escape(&item.name),
-                format_multiplier(item.qty),
-                html_escape(&item.unit),
+                r#"<li class="trip-have-row">
+                    <span class="trip-have-name">{name} &middot; {qty} {unit}</span>
+                    <button class="btn small secondary" onclick="moveToPantry('{js_key}', false, this)" title="Move back to the buy list">Need it</button>
+                </li>"#,
+                name = html_escape(&item.name),
+                qty = format_multiplier(item.qty),
+                unit = html_escape(&item.unit),
+                js_key = js_single_quote_attr_escape(&key),
             ));
         }
         html.push_str("</ul>");
@@ -503,6 +508,7 @@ fn render_checklist_item(
             </label>
             <span class="trip-check-tools">
                 {section_select}
+                <button class="btn small secondary" onclick="moveToPantry('{js_key}', true, this)" title="I already have this — move to pantry">In pantry</button>
                 <a href="{url}" target="_blank" rel="noopener" class="btn small secondary">Search</a>
             </span>
         </li>"#,
@@ -514,6 +520,7 @@ fn render_checklist_item(
         unit = html_escape(&item.unit),
         sources = sources,
         section_select = section_select,
+        js_key = js_single_quote_attr_escape(&key),
         url = html_escape(&instacart_url),
     ));
 }
@@ -579,6 +586,22 @@ fn trip_page_script(js_trip_id: &str) -> String {
             if (!resp.ok) throw new Error('reopen failed');
             window.location.reload();
         }} catch (e) {{ alert('Could not reopen trip: ' + e.message); }}
+    }}
+
+    async function moveToPantry(key, inPantry, btn) {{
+        btn.disabled = true;
+        try {{
+            const resp = await fetch('/api/shopping/trip/' + encodeURIComponent(TRIP_ID) + '/pantry', {{
+                method: 'POST',
+                headers: {{ 'Content-Type': 'application/json' }},
+                body: JSON.stringify({{ key: key, in_pantry: inPantry }})
+            }});
+            if (!resp.ok) throw new Error('save failed');
+            window.location.reload();
+        }} catch (e) {{
+            btn.disabled = false;
+            alert('Could not update pantry: ' + e.message);
+        }}
     }}
 
     async function changeSection(sel) {{

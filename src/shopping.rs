@@ -204,6 +204,40 @@ pub fn set_item_checked(
     Ok(true)
 }
 
+/// Mark a trip item as in (or out of) the pantry. Updates the item's flag on
+/// the trip *and* the global pantry, so the choice is remembered for future
+/// lists. Moving an item into the pantry also drops it from the checked set,
+/// since it's no longer something to pick up. Returns `false` if the item
+/// isn't on the trip.
+pub fn set_item_in_pantry(
+    db: &Db,
+    trip_id: &str,
+    key: &str,
+    in_pantry: bool,
+) -> Result<bool, String> {
+    let Some(mut trip) = load_trip(db, trip_id) else {
+        return Ok(false);
+    };
+    let mut name: Option<String> = None;
+    for item in trip.items.iter_mut() {
+        if item_key(item) == key {
+            item.in_pantry = in_pantry;
+            name = Some(item.name.clone());
+        }
+    }
+    let Some(name) = name else {
+        return Ok(false);
+    };
+    if in_pantry {
+        trip.checked.retain(|k| k != key);
+        pantry::add(db, &name)?;
+    } else {
+        pantry::remove(db, &name)?;
+    }
+    save_trip_record(db, &trip)?;
+    Ok(true)
+}
+
 /// Close a trip (shopping done). Marks it closed and clears the active pointer
 /// if it pointed here. Returns `false` if the trip does not exist.
 pub fn close_trip(db: &Db, trip_id: &str) -> Result<bool, String> {
@@ -893,6 +927,46 @@ mod tests {
     fn test_set_item_checked_missing_trip() {
         let db = temp_db();
         assert!(!set_item_checked(&db, "nope", "k", true).unwrap());
+    }
+
+    #[test]
+    fn test_set_item_in_pantry_updates_trip_and_pantry() {
+        let db = temp_db();
+        let item = ShoppingItem {
+            name: "Olive Oil".into(),
+            qty: 2.0,
+            unit: "tbsp".into(),
+            in_pantry: false,
+            sources: vec![],
+        };
+        let key = item_key(&item);
+        let id = save_trip(&db, std::slice::from_ref(&item), &[]).unwrap();
+
+        // Checking it off, then moving it to the pantry, removes it from the
+        // buy list and the checked set and records it in the global pantry.
+        set_item_checked(&db, &id, &key, true).unwrap();
+        assert!(set_item_in_pantry(&db, &id, &key, true).unwrap());
+
+        let trip = load_trip(&db, &id).unwrap();
+        assert!(trip.items[0].in_pantry);
+        assert!(!trip.is_checked(&key));
+        assert_eq!(trip.buy_total(), 0);
+        assert!(pantry::has(&db, "olive oil"));
+
+        // Moving it back out restores it to the buy list and the pantry.
+        assert!(set_item_in_pantry(&db, &id, &key, false).unwrap());
+        let trip = load_trip(&db, &id).unwrap();
+        assert!(!trip.items[0].in_pantry);
+        assert_eq!(trip.buy_total(), 1);
+        assert!(!pantry::has(&db, "olive oil"));
+    }
+
+    #[test]
+    fn test_set_item_in_pantry_missing() {
+        let db = temp_db();
+        let id = save_trip(&db, &[], &[]).unwrap();
+        assert!(!set_item_in_pantry(&db, &id, "ghost::", true).unwrap());
+        assert!(!set_item_in_pantry(&db, "nope", "k", true).unwrap());
     }
 
     #[test]

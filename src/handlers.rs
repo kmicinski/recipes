@@ -458,6 +458,32 @@ pub async fn trip_check_handler(
     }
 }
 
+#[derive(Deserialize)]
+pub struct TripPantryRequest {
+    pub key: String,
+    pub in_pantry: bool,
+}
+
+/// Move a trip item into (or back out of) the pantry instead of buying it.
+/// Updates the trip and the global pantry, then reports refreshed progress.
+pub async fn trip_pantry_handler(
+    Path(id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    axum::Json(body): axum::Json<TripPantryRequest>,
+) -> Response {
+    match shopping::set_item_in_pantry(&state.db, &id, &body.key, body.in_pantry) {
+        Ok(true) => {
+            let (done, total) = shopping::load_trip(&state.db, &id)
+                .map(|t| (t.buy_done(), t.buy_total()))
+                .unwrap_or((0, 0));
+            axum::Json(serde_json::json!({ "ok": true, "done": done, "total": total }))
+                .into_response()
+        }
+        Ok(false) => (StatusCode::NOT_FOUND, "Item not found on trip").into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
 /// Close a trip (shopping done) — clears the active banner.
 pub async fn close_trip_handler(
     Path(id): Path<String>,

@@ -827,6 +827,14 @@ h1 { font-size: 1.5rem; }
     max-width: 9rem;
 }
 
+.trip-have-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
+}
+.trip-have-name { color: var(--muted); }
+
 @media (max-width: 700px) {
     .trip-check-row { flex-wrap: wrap; }
     .trip-check-tools { width: 100%; padding-left: 1.9rem; }
