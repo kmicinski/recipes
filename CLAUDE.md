@@ -54,6 +54,32 @@ button copies it) is an in-store checklist:
 
 `shopping::active_trip` self-heals a pointer to a missing or closed trip.
 
+## Weekly meal plan (`src/mealplan.rs` + `/plan`)
+
+One `MealPlan` record per week (Sled tree `meal_plans`, keyed by the week's
+**Monday** `YYYY-MM-DD`; `mealplan::week_start_of` normalizes any date).
+A `PlannedMeal` is either a recipe reference (`recipe_key` + snapshotted
+`title` + `multiplier`) or free text ("leftovers"). Pages: `/plan` (this
+week) and `/plan/{monday}` (canonical — other days redirect). APIs:
+`POST /api/plan/meal` (add), `POST /api/plan/meal/remove`, and
+`POST /api/plan/trip` with `action: "build" | "link" | "unlink"`.
+
+**Trip association:** `build` runs the plan's recipe meals through
+`build_shopping_list` → `save_trip`, makes it the **active trip** (banner and
+in-store checklist work as usual), and stores `trip_id` on the plan; `link`
+attaches an existing saved trip (the page lists recent ones to click);
+`unlink` detaches. The plan page shows the linked trip's live progress.
+
+**The week board is the shared kcal calendar component**, vendored at
+`src/vendor/kcal.{js,css}` and inlined via `include_str!` (this app serves no
+static files). Canonical source: mycloud repo `/srv/apps/shared/kcal/` — edit
+there and run its `sync.sh`; never edit the vendored copies. The template
+(`templates/mealplan.rs`) mounts it with `view: "week"`, `weekStart: 1`,
+`header: false` (prev/today/next are server-side links), a `renderChip` for
+meal chips, and `dayFooter` for the per-day ＋ add button.
+
+Deferred: drag-to-move meals between days (remove + re-add covers it).
+
 ## MCP server (`src/mcp.rs`)
 
 Hand-rolled JSON-RPC 2.0 over a single `POST /mcp`, modeled on `../notes/src/mcp.rs`.
@@ -70,6 +96,10 @@ No SSE — every tool call is a synchronous request/response.
 - `search_recipes(query, limit?)` — substring match across title/tags/ingredients/body
 - `build_shopping_list(selections:[{key, multiplier}])` — aggregates ingredients by (name, unit)
   across recipes, annotated with sources and pantry status; returns `to_buy` / `have` groups and `unknown_keys`
+- `publish_trip(selections, title?, notes?)` — snapshot a trip to a durable short `/t/{slug}` page
+- `list_trips()` / `delete_trip(slug, confirm:true)` — published-trip management
+- `get_meal_plan(week_of?)` — the weekly plan (Mon-Sun days with meals + associated trip summary)
+- `plan_meal(date, recipe_key?|title?, multiplier?)` / `remove_meal(date, meal_id)` — edit the plan
 - `list_pantry()` / `set_pantry(name, in_pantry)` — binary pantry have/don't-have state
 - `create_recipe(filename, title, servings?, tags?, ingredients, body)` — git-committed
 - `update_recipe(key, title, servings?, tags?, ingredients, body)` — git-committed

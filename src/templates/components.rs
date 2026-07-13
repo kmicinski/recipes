@@ -23,6 +23,7 @@ pub fn nav_bar(logged_in: bool) -> String {
     format!(
         r#"<nav class="nav-bar">
             <a href="/">Recipes</a>
+            <a href="/plan">Plan</a>
             <a href="/shopping">Shopping</a>
             <a href="/pantry">Pantry</a>
             <span class="spacer"></span>

@@ -844,6 +844,190 @@ h1 { font-size: 1.5rem; }
     .active-trip-banner, .aisle-select, .trip-progress-wrap { display: none !important; }
 }
 
+/* ===== Meal plan (weekly planner) ===== */
+/* The week board itself is the shared kcal component (src/vendor/kcal.css,
+   inlined by the plan template); map its theme variables to Solarized. */
+.kcal {
+    --kcal-line: var(--border);
+    --kcal-text: var(--base01);
+    --kcal-muted: var(--base1);
+    --kcal-bg: var(--base2);
+    --kcal-head-bg: var(--base2);
+    --kcal-cell: var(--base3);
+    --kcal-cell-2: var(--highlight);
+    --kcal-accent: var(--cyan);
+    --kcal-on-accent: #fff;
+    --kcal-radius: 8px;
+    --kcal-week-min: 170px;
+}
+
+.plan-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+}
+.plan-header h1 { margin: 0.5em 0 0; }
+.plan-week-label { color: var(--base01); font-weight: 600; }
+.plan-nav { display: flex; gap: 0.35rem; margin-top: 0.9rem; }
+.plan-nav .btn { text-decoration: none; }
+
+.meal-chip {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.8rem;
+    line-height: 1.35;
+    padding: 0.15rem 0.4rem;
+    border-radius: 5px;
+    background: color-mix(in srgb, var(--chip) 12%, transparent);
+    border-left: 3px solid var(--chip);
+    flex: none;
+    min-width: 0;
+}
+.meal-chip-title {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.meal-chip-title a { color: var(--base01); }
+.meal-mult { color: var(--muted); font-size: 0.7rem; flex: none; }
+.meal-remove {
+    flex: none;
+    border: none;
+    background: none;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 0.85rem;
+    line-height: 1;
+    padding: 0 0.1rem;
+}
+.meal-remove:hover { color: var(--red); }
+
+.meal-add-btn {
+    width: 100%;
+    border: 1px dashed var(--border);
+    background: none;
+    border-radius: 6px;
+    padding: 0.25rem;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 0.75rem;
+}
+.meal-add-btn:hover { color: var(--base01); border-color: var(--base1); }
+
+/* Shopping-trip association panel */
+.plan-trip-panel {
+    margin-top: 1.25rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.9rem 1rem 1rem;
+    background: var(--highlight);
+}
+.plan-trip-panel h2 { margin-top: 0; font-size: 1.05rem; }
+.plan-trip-hint { color: var(--muted); font-size: 0.85rem; margin: 0.25rem 0 0.6rem; }
+.plan-trip-linked {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+.plan-trip-link { font-weight: 600; }
+.plan-trip-recent { margin-top: 0.9rem; }
+.plan-trip-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.5rem;
+    width: 100%;
+    text-align: left;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    border-radius: 6px;
+    padding: 0.4rem 0.6rem;
+    margin-top: 0.35rem;
+    cursor: pointer;
+    font-size: 0.85rem;
+    color: var(--fg);
+}
+.plan-trip-row:hover { border-color: var(--base1); }
+.plan-trip-meta { color: var(--muted); }
+
+/* Add-a-meal picker overlay */
+.meal-picker {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 43, 54, 0.35);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    padding: 1rem;
+}
+.meal-picker[hidden] { display: none; }
+.meal-picker-card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1rem;
+    width: 100%;
+    max-width: 26rem;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+}
+.meal-picker-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+}
+.meal-picker-head h2 { margin: 0; font-size: 1rem; }
+.meal-picker-card input[type="text"],
+.meal-picker-card input[type="number"] {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.4rem 0.6rem;
+    font-family: inherit;
+    font-size: 0.9rem;
+    background: var(--base3);
+    color: var(--fg);
+}
+.meal-picker-mult {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    color: var(--muted);
+    font-size: 0.85rem;
+}
+.meal-picker-mult input { width: 5rem; }
+.meal-recipe-list {
+    flex: 1;
+    min-height: 8rem;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+.meal-recipe-row {
+    text-align: left;
+    border: 1px solid var(--border);
+    background: var(--base3);
+    color: var(--fg);
+    border-radius: 6px;
+    padding: 0.4rem 0.6rem;
+    cursor: pointer;
+    font-size: 0.9rem;
+}
+.meal-recipe-row:hover { border-color: var(--cyan); }
+.meal-picker-empty { color: var(--muted); font-size: 0.85rem; padding: 0.5rem 0; }
+.meal-picker-custom { display: flex; gap: 0.4rem; }
+.meal-picker-custom input { flex: 1; }
+
 @media print {
     .nav-bar, .fab, .btn, .mode-toggle, .back-link, .pantry-badge { display: none !important; }
     .container { max-width: 100%; padding: 0; }

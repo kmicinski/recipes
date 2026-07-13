@@ -29,6 +29,21 @@ async fn main() {
             "/api/recipe/{key}",
             axum::routing::post(handlers::save_recipe_api).delete(handlers::delete_recipe),
         )
+        // Meal plan routes (weekly planner; calendar is the shared kcal component)
+        .route("/plan", get(handlers::plan_page))
+        .route("/plan/{date}", get(handlers::plan_week_page))
+        .route(
+            "/api/plan/meal",
+            axum::routing::post(handlers::plan_add_meal),
+        )
+        .route(
+            "/api/plan/meal/remove",
+            axum::routing::post(handlers::plan_remove_meal),
+        )
+        .route(
+            "/api/plan/trip",
+            axum::routing::post(handlers::plan_trip_handler),
+        )
         // Shopping routes
         .route("/shopping", get(handlers::shopping_page))
         .route(

@@ -5,7 +5,7 @@ use crate::models::{Ingredient, Recipe, RecipeSelection};
 use crate::recipes::{generate_key, git_commit, git_rm_commit, serialize_recipe};
 use crate::templates::{base_html, STYLE};
 use crate::validate_path_within;
-use crate::{instacart, pantry, shopping, AppState};
+use crate::{instacart, mealplan, pantry, shopping, AppState};
 use axum::{
     extract::{Path, Query, State},
     http::{header::SET_COOKIE, HeaderMap, StatusCode},
@@ -653,6 +653,151 @@ pub async fn pantry_bulk_remove(
     match pantry::bulk_remove(&state.db, &body.names) {
         Ok(()) => (StatusCode::OK, "OK").into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+// ============================================================================
+// Meal plan
+// ============================================================================
+
+fn render_plan_for_week(state: &AppState, week_start: &str, logged_in: bool) -> Html<String> {
+    let plan = mealplan::load_plan(&state.db, week_start);
+    let recipes = state.load_recipes();
+    let linked = plan
+        .trip_id
+        .as_deref()
+        .and_then(|id| shopping::load_trip(&state.db, id));
+    let recent = shopping::list_trips(&state.db);
+    Html(crate::templates::mealplan::render_plan_page(
+        &plan,
+        &recipes,
+        linked.as_ref(),
+        &recent,
+        logged_in,
+    ))
+}
+
+/// This week's meal plan.
+pub async fn plan_page(State(state): State<Arc<AppState>>, jar: CookieJar) -> Response {
+    let logged_in = is_logged_in(&jar);
+    let week = mealplan::week_start_of(&mealplan::today())
+        .expect("today is always a valid date");
+    render_plan_for_week(&state, &week, logged_in).into_response()
+}
+
+/// The meal plan for the week containing `{date}`. Canonical URLs use the
+/// week's Monday; any other day redirects there.
+pub async fn plan_week_page(
+    Path(date): Path<String>,
+    State(state): State<Arc<AppState>>,
+    jar: CookieJar,
+) -> Response {
+    let logged_in = is_logged_in(&jar);
+    match mealplan::week_start_of(&date) {
+        Ok(week) if week == date => render_plan_for_week(&state, &week, logged_in).into_response(),
+        Ok(week) => Redirect::to(&format!("/plan/{}", week)).into_response(),
+        Err(_) => (
+            StatusCode::NOT_FOUND,
+            Html(base_html("Not Found", "<h1>Bad date</h1>", logged_in)),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct AddMealRequest {
+    pub date: String,
+    #[serde(default)]
+    pub recipe_key: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub multiplier: Option<f64>,
+}
+
+pub async fn plan_add_meal(
+    State(state): State<Arc<AppState>>,
+    axum::Json(body): axum::Json<AddMealRequest>,
+) -> Response {
+    let recipes = state.load_recipes();
+    match mealplan::add_meal(
+        &state.db,
+        &recipes,
+        &body.date,
+        body.recipe_key.as_deref(),
+        body.title.as_deref(),
+        body.multiplier.unwrap_or(1.0),
+    ) {
+        Ok(plan) => axum::Json(serde_json::json!({
+            "ok": true,
+            "week_start": plan.week_start,
+        }))
+        .into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct RemoveMealRequest {
+    pub date: String,
+    pub meal_id: String,
+}
+
+pub async fn plan_remove_meal(
+    State(state): State<Arc<AppState>>,
+    axum::Json(body): axum::Json<RemoveMealRequest>,
+) -> Response {
+    match mealplan::remove_meal(&state.db, &body.date, &body.meal_id) {
+        Ok(Some(_)) => axum::Json(serde_json::json!({ "ok": true })).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, "No such meal").into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct PlanTripRequest {
+    pub week_start: String,
+    pub action: String,
+    #[serde(default)]
+    pub trip_id: Option<String>,
+}
+
+/// Associate a shopping trip with a week's plan: `build` creates a trip from
+/// the plan's recipes (and makes it active), `link` attaches an existing
+/// trip, `unlink` detaches.
+pub async fn plan_trip_handler(
+    State(state): State<Arc<AppState>>,
+    axum::Json(body): axum::Json<PlanTripRequest>,
+) -> Response {
+    match body.action.as_str() {
+        "build" => {
+            let recipes = state.load_recipes();
+            match mealplan::build_trip_for_week(&state.db, &recipes, &body.week_start) {
+                Ok(trip_id) => {
+                    axum::Json(serde_json::json!({ "ok": true, "trip_id": trip_id }))
+                        .into_response()
+                }
+                Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+            }
+        }
+        "link" => {
+            let Some(trip_id) = body.trip_id.as_deref() else {
+                return (StatusCode::BAD_REQUEST, "link requires trip_id").into_response();
+            };
+            match mealplan::link_trip(&state.db, &body.week_start, Some(trip_id)) {
+                Ok(_) => axum::Json(serde_json::json!({ "ok": true })).into_response(),
+                Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+            }
+        }
+        "unlink" => match mealplan::link_trip(&state.db, &body.week_start, None) {
+            Ok(_) => axum::Json(serde_json::json!({ "ok": true })).into_response(),
+            Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+        },
+        other => (
+            StatusCode::BAD_REQUEST,
+            format!("unknown action: {}", other),
+        )
+            .into_response(),
     }
 }
 

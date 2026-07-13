@@ -10,6 +10,7 @@ pub mod auth;
 pub mod handlers;
 pub mod instacart;
 pub mod mcp;
+pub mod mealplan;
 pub mod models;
 pub mod pantry;
 pub mod recipes;

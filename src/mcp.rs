@@ -352,6 +352,42 @@ fn tool_catalog() -> Vec<Value> {
                 "required": ["key", "confirm"]
             }
         }),
+        json!({
+            "name": "get_meal_plan",
+            "description": "The weekly meal plan for the week containing `week_of` (default: today). Weeks run Monday-Sunday. Includes each day's planned meals and the associated shopping trip, if any.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "week_of": {"type": "string", "description": "Any date in the week, YYYY-MM-DD (default today)"}
+                }
+            }
+        }),
+        json!({
+            "name": "plan_meal",
+            "description": "Add a meal to the weekly plan on a specific date. Provide `recipe_key` for a recipe from the collection (its title is snapshotted), or a free-text `title` (e.g. 'leftovers'). `multiplier` scales servings when a shopping trip is built from the plan.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "date": {"type": "string", "description": "YYYY-MM-DD"},
+                    "recipe_key": {"type": "string"},
+                    "title": {"type": "string"},
+                    "multiplier": {"type": "number", "default": 1}
+                },
+                "required": ["date"]
+            }
+        }),
+        json!({
+            "name": "remove_meal",
+            "description": "Remove a planned meal by its id (see get_meal_plan) from the week containing `date`.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "date": {"type": "string", "description": "The meal's date, YYYY-MM-DD"},
+                    "meal_id": {"type": "string"}
+                },
+                "required": ["date", "meal_id"]
+            }
+        }),
     ]
 }
 
@@ -397,6 +433,9 @@ async fn handle_tools_call(state: Arc<AppState>, params: Value) -> Result<Value,
         "delete_trip" => Ok(tool_text(&tool_delete_trip(state, args)?)),
         "list_pantry" => Ok(tool_text(&tool_list_pantry(state)?)),
         "set_pantry" => Ok(tool_text(&tool_set_pantry(state, args)?)),
+        "get_meal_plan" => Ok(tool_text(&tool_get_meal_plan(state, args)?)),
+        "plan_meal" => Ok(tool_text(&tool_plan_meal(state, args)?)),
+        "remove_meal" => Ok(tool_text(&tool_remove_meal(state, args)?)),
         "create_recipe" => Ok(tool_text(&tool_create_recipe(state, args)?)),
         "update_recipe" => Ok(tool_text(&tool_update_recipe(state, args)?)),
         "delete_recipe" => Ok(tool_text(&tool_delete_recipe(state, args)?)),
@@ -693,6 +732,84 @@ fn tool_delete_trip(state: Arc<AppState>, args: Value) -> Result<Value, String> 
     }
     let existed = shopping::delete_published(&state.db, slug)?;
     Ok(json!({ "ok": true, "slug": slug, "existed": existed }))
+}
+
+fn meal_json(m: &crate::mealplan::PlannedMeal) -> Value {
+    json!({
+        "id": m.id,
+        "date": m.date,
+        "title": m.title,
+        "recipe_key": m.recipe_key,
+        "multiplier": m.multiplier,
+    })
+}
+
+fn plan_json(state: &AppState, plan: &crate::mealplan::MealPlan) -> Value {
+    let days: Vec<Value> = plan
+        .week_dates()
+        .into_iter()
+        .map(|date| {
+            let meals: Vec<Value> = plan.meals_on(&date).into_iter().map(meal_json).collect();
+            json!({ "date": date, "meals": meals })
+        })
+        .collect();
+    let trip = plan
+        .trip_id
+        .as_deref()
+        .and_then(|id| shopping::load_trip(&state.db, id))
+        .map(|t| {
+            json!({
+                "id": t.id,
+                "created_at": t.created_at,
+                "closed": t.closed,
+                "picked_up": t.buy_done(),
+                "to_buy": t.buy_total(),
+            })
+        });
+    json!({
+        "week_start": plan.week_start,
+        "days": days,
+        "trip": trip,
+    })
+}
+
+fn tool_get_meal_plan(state: Arc<AppState>, args: Value) -> Result<Value, String> {
+    let week_of = args
+        .get("week_of")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(crate::mealplan::today);
+    let week = crate::mealplan::week_start_of(&week_of)?;
+    let plan = crate::mealplan::load_plan(&state.db, &week);
+    Ok(plan_json(&state, &plan))
+}
+
+fn tool_plan_meal(state: Arc<AppState>, args: Value) -> Result<Value, String> {
+    let date = args
+        .get("date")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "missing 'date'".to_string())?;
+    let recipe_key = args.get("recipe_key").and_then(|v| v.as_str());
+    let title = args.get("title").and_then(|v| v.as_str());
+    let multiplier = args.get("multiplier").and_then(|v| v.as_f64()).unwrap_or(1.0);
+    let recipes = state.load_recipes();
+    let plan = crate::mealplan::add_meal(&state.db, &recipes, date, recipe_key, title, multiplier)?;
+    Ok(plan_json(&state, &plan))
+}
+
+fn tool_remove_meal(state: Arc<AppState>, args: Value) -> Result<Value, String> {
+    let date = args
+        .get("date")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "missing 'date'".to_string())?;
+    let meal_id = args
+        .get("meal_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "missing 'meal_id'".to_string())?;
+    match crate::mealplan::remove_meal(&state.db, date, meal_id)? {
+        Some(plan) => Ok(plan_json(&state, &plan)),
+        None => Err(format!("No meal '{}' in the week of {}", meal_id, date)),
+    }
 }
 
 fn tool_list_pantry(state: Arc<AppState>) -> Result<Value, String> {
@@ -1057,5 +1174,53 @@ mod tests {
         tool_set_pantry(state.clone(), json!({ "name": "garlic", "in_pantry": false })).unwrap();
         let listed = tool_list_pantry(state).unwrap();
         assert_eq!(listed["count"], 0);
+    }
+
+    #[test]
+    fn meal_plan_tools_round_trip() {
+        let (state, key_a, _) = seeded_state();
+
+        // Plan a recipe meal and a free-text meal in the week of 2026-07-13.
+        let plan = tool_plan_meal(
+            state.clone(),
+            json!({ "date": "2026-07-15", "recipe_key": key_a, "multiplier": 2 }),
+        )
+        .unwrap();
+        assert_eq!(plan["week_start"], "2026-07-13");
+        let plan = tool_plan_meal(
+            state.clone(),
+            json!({ "date": "2026-07-17", "title": "Leftovers" }),
+        )
+        .unwrap();
+        assert_eq!(plan["days"].as_array().unwrap().len(), 7);
+
+        // get_meal_plan for any day of that week sees both meals.
+        let got = tool_get_meal_plan(state.clone(), json!({ "week_of": "2026-07-19" })).unwrap();
+        assert_eq!(got["week_start"], "2026-07-13");
+        let wed = &got["days"][2]; // Mon +2 = Wednesday the 15th
+        assert_eq!(wed["date"], "2026-07-15");
+        assert_eq!(wed["meals"][0]["title"], "Soup");
+        assert_eq!(wed["meals"][0]["multiplier"], 2.0);
+        assert_eq!(got["trip"], json!(null));
+
+        // Remove the free-text meal.
+        let meal_id = got["days"][4]["meals"][0]["id"].as_str().unwrap().to_string();
+        let after = tool_remove_meal(
+            state.clone(),
+            json!({ "date": "2026-07-17", "meal_id": meal_id }),
+        )
+        .unwrap();
+        assert!(after["days"][4]["meals"].as_array().unwrap().is_empty());
+
+        // Removing it again errors.
+        assert!(tool_remove_meal(
+            state.clone(),
+            json!({ "date": "2026-07-17", "meal_id": "meal_gone" })
+        )
+        .is_err());
+
+        // Validation: unknown recipe key, missing title/key.
+        assert!(tool_plan_meal(state.clone(), json!({ "date": "2026-07-15", "recipe_key": "zzz" })).is_err());
+        assert!(tool_plan_meal(state, json!({ "date": "2026-07-15" })).is_err());
     }
 }
