@@ -1,12 +1,72 @@
 //! Index page: list of all recipes.
 
 use crate::handlers::ReadyInfo;
+use crate::mealplan::MealPlan;
 use crate::models::Recipe;
 use crate::recipes::html_escape;
 use crate::templates::base_html;
 
-pub fn render_recipe_list(recipes: &[Recipe], ready_info: &[ReadyInfo], logged_in: bool) -> String {
+/// A compact day-by-day strip of the current week's meals, shown when the
+/// week's plan is locked in. Links to the full plan page.
+fn this_week_strip(plan: &MealPlan) -> String {
+    let today = crate::mealplan::today();
+    let mut days = String::new();
+    for date in plan.week_dates() {
+        let meals = plan.meals_on(&date);
+        if meals.is_empty() {
+            continue;
+        }
+        let label = chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d")
+            .map(|d| d.format("%a %-d").to_string())
+            .unwrap_or_else(|_| date.clone());
+        let chips: String = meals
+            .iter()
+            .map(|m| {
+                let title = html_escape(&m.title);
+                match &m.recipe_key {
+                    Some(key) => format!(
+                        r#"<a class="week-strip-meal" href="/recipe/{key}">{title}</a>"#,
+                        key = html_escape(key),
+                        title = title,
+                    ),
+                    None => format!(r#"<span class="week-strip-meal">{}</span>"#, title),
+                }
+            })
+            .collect();
+        days.push_str(&format!(
+            r#"<div class="week-strip-day{today_cls}">
+                <div class="week-strip-date">{label}</div>
+                {chips}
+            </div>"#,
+            today_cls = if date == today { " week-strip-today" } else { "" },
+            label = html_escape(&label),
+            chips = chips,
+        ));
+    }
+    format!(
+        r#"<div class="week-strip">
+            <div class="week-strip-head">
+                <h2 class="ready-heading">🍽️ This Week's Meals</h2>
+                <a class="week-strip-link" href="/plan/{week}">full plan →</a>
+            </div>
+            <div class="week-strip-days">{days}</div>
+        </div>"#,
+        week = html_escape(&plan.week_start),
+        days = days,
+    )
+}
+
+pub fn render_recipe_list(
+    recipes: &[Recipe],
+    ready_info: &[ReadyInfo],
+    this_week: Option<&MealPlan>,
+    logged_in: bool,
+) -> String {
     let mut html = String::new();
+
+    if let Some(plan) = this_week {
+        html.push_str(&this_week_strip(plan));
+    }
 
     // "Ready to Make" and "Almost Ready" sections
     let ready: Vec<&ReadyInfo> = ready_info

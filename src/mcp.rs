@@ -354,7 +354,52 @@ fn tool_catalog() -> Vec<Value> {
         }),
         json!({
             "name": "get_meal_plan",
-            "description": "The weekly meal plan for the week containing `week_of` (default: today). Weeks run Monday-Sunday. Includes each day's planned meals and the associated shopping trip, if any.",
+            "description": "The weekly meal plan for the week containing `week_of` (default: today). Weeks start on the configured `week_start_day` (see set_week_start_day; default Monday). Includes the brainstorm notes, the locked flag, each day's planned meals, and the associated shopping trip, if any.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "week_of": {"type": "string", "description": "Any date in the week, YYYY-MM-DD (default today)"}
+                }
+            }
+        }),
+        json!({
+            "name": "set_plan_notes",
+            "description": "Replace the brainstorm notes (markdown) for the week containing `week_of` (default: today). This is the scratchpad for sketching the week's food before meals are locked in — ideas, constraints, what to reuse across days.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "week_of": {"type": "string", "description": "Any date in the week, YYYY-MM-DD (default today)"},
+                    "notes": {"type": "string", "description": "The full replacement notes (markdown). Empty string clears them."}
+                },
+                "required": ["notes"]
+            }
+        }),
+        json!({
+            "name": "lock_plan",
+            "description": "Lock in (locked: true) or reopen (false) the plan for the week containing `week_of` (default: today). A locked plan is final: the app surfaces the week's meals prominently (plan page + home-page strip) instead of the brainstorm.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "week_of": {"type": "string", "description": "Any date in the week, YYYY-MM-DD (default today)"},
+                    "locked": {"type": "boolean"}
+                },
+                "required": ["locked"]
+            }
+        }),
+        json!({
+            "name": "set_week_start_day",
+            "description": "Set which weekday the planning week starts on (household-wide). Re-buckets every stored plan so each meal lands in the correct new week. Use when the household's shopping rhythm starts on e.g. Saturday rather than Monday.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "day": {"type": "string", "description": "monday…sunday (3-letter abbreviations accepted)"}
+                },
+                "required": ["day"]
+            }
+        }),
+        json!({
+            "name": "build_plan_trip",
+            "description": "Build a shopping trip from the recipe-backed meals of the week containing `week_of` (default: today), make it the active in-store checklist, and link it to the plan. Returns the aggregated list split into to_buy and already_have (pantry). Fails if the week has no recipe-based meals.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -436,6 +481,10 @@ async fn handle_tools_call(state: Arc<AppState>, params: Value) -> Result<Value,
         "get_meal_plan" => Ok(tool_text(&tool_get_meal_plan(state, args)?)),
         "plan_meal" => Ok(tool_text(&tool_plan_meal(state, args)?)),
         "remove_meal" => Ok(tool_text(&tool_remove_meal(state, args)?)),
+        "set_plan_notes" => Ok(tool_text(&tool_set_plan_notes(state, args)?)),
+        "lock_plan" => Ok(tool_text(&tool_lock_plan(state, args)?)),
+        "set_week_start_day" => Ok(tool_text(&tool_set_week_start_day(state, args)?)),
+        "build_plan_trip" => Ok(tool_text(&tool_build_plan_trip(state, args)?)),
         "create_recipe" => Ok(tool_text(&tool_create_recipe(state, args)?)),
         "update_recipe" => Ok(tool_text(&tool_update_recipe(state, args)?)),
         "delete_recipe" => Ok(tool_text(&tool_delete_recipe(state, args)?)),
@@ -768,6 +817,9 @@ fn plan_json(state: &AppState, plan: &crate::mealplan::MealPlan) -> Value {
         });
     json!({
         "week_start": plan.week_start,
+        "week_start_day": crate::mealplan::weekday_name(crate::mealplan::week_start_day(&state.db)),
+        "notes": plan.notes,
+        "locked": plan.locked,
         "days": days,
         "trip": trip,
     })
@@ -779,9 +831,75 @@ fn tool_get_meal_plan(state: Arc<AppState>, args: Value) -> Result<Value, String
         .and_then(|v| v.as_str())
         .map(str::to_string)
         .unwrap_or_else(crate::mealplan::today);
-    let week = crate::mealplan::week_start_of(&week_of)?;
+    let week = crate::mealplan::week_of(&state.db, &week_of)?;
     let plan = crate::mealplan::load_plan(&state.db, &week);
     Ok(plan_json(&state, &plan))
+}
+
+fn tool_set_plan_notes(state: Arc<AppState>, args: Value) -> Result<Value, String> {
+    let week_of = args
+        .get("week_of")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(crate::mealplan::today);
+    let notes = args
+        .get("notes")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "missing 'notes'".to_string())?;
+    let plan = crate::mealplan::set_notes(&state.db, &week_of, notes)?;
+    Ok(plan_json(&state, &plan))
+}
+
+fn tool_lock_plan(state: Arc<AppState>, args: Value) -> Result<Value, String> {
+    let week_of = args
+        .get("week_of")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(crate::mealplan::today);
+    let locked = args
+        .get("locked")
+        .and_then(|v| v.as_bool())
+        .ok_or_else(|| "missing 'locked'".to_string())?;
+    let plan = crate::mealplan::set_locked(&state.db, &week_of, locked)?;
+    Ok(plan_json(&state, &plan))
+}
+
+fn tool_set_week_start_day(state: Arc<AppState>, args: Value) -> Result<Value, String> {
+    let day = args
+        .get("day")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "missing 'day'".to_string())?;
+    let day = crate::mealplan::parse_weekday(day)?;
+    let plans = crate::mealplan::set_week_start_day(&state.db, day)?;
+    Ok(json!({
+        "week_start_day": crate::mealplan::weekday_name(day),
+        "plans_rebucketed": plans,
+    }))
+}
+
+fn tool_build_plan_trip(state: Arc<AppState>, args: Value) -> Result<Value, String> {
+    let week_of = args
+        .get("week_of")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(crate::mealplan::today);
+    let recipes = state.load_recipes();
+    let trip_id = crate::mealplan::build_trip_for_week(&state.db, &recipes, &week_of)?;
+    let trip = shopping::load_trip(&state.db, &trip_id)
+        .ok_or_else(|| "trip vanished after save".to_string())?;
+    let (to_buy, have): (Vec<_>, Vec<_>) = trip.items.iter().partition(|i| !i.in_pantry);
+    let item_json = |i: &&crate::models::ShoppingItem| {
+        json!({ "name": i.name, "qty": i.qty, "unit": i.unit, "sources": i.sources })
+    };
+    Ok(json!({
+        "trip_id": trip_id,
+        "trip_url": format!("/shopping/trip/{}", trip.id),
+        "recipes": trip.recipes.iter().map(|r| json!({
+            "key": r.key, "title": r.title, "multiplier": r.multiplier,
+        })).collect::<Vec<_>>(),
+        "to_buy": to_buy.iter().map(item_json).collect::<Vec<_>>(),
+        "already_have": have.iter().map(item_json).collect::<Vec<_>>(),
+    }))
 }
 
 fn tool_plan_meal(state: Arc<AppState>, args: Value) -> Result<Value, String> {
@@ -1222,5 +1340,64 @@ mod tests {
         // Validation: unknown recipe key, missing title/key.
         assert!(tool_plan_meal(state.clone(), json!({ "date": "2026-07-15", "recipe_key": "zzz" })).is_err());
         assert!(tool_plan_meal(state, json!({ "date": "2026-07-15" })).is_err());
+    }
+
+    #[test]
+    fn plan_notes_and_lock_tools() {
+        let (state, _, _) = seeded_state();
+
+        let plan = tool_set_plan_notes(
+            state.clone(),
+            json!({ "week_of": "2026-07-15", "notes": "## Ideas\n- fish twice" }),
+        )
+        .unwrap();
+        assert_eq!(plan["week_start"], "2026-07-13");
+        assert_eq!(plan["notes"], "## Ideas\n- fish twice");
+        assert_eq!(plan["locked"], false);
+        assert_eq!(plan["week_start_day"], "monday");
+
+        let plan = tool_lock_plan(state.clone(), json!({ "week_of": "2026-07-19", "locked": true })).unwrap();
+        assert_eq!(plan["locked"], true);
+        assert_eq!(plan["notes"], "## Ideas\n- fish twice"); // notes survive locking
+
+        assert!(tool_lock_plan(state.clone(), json!({ "week_of": "2026-07-19" })).is_err());
+        assert!(tool_set_plan_notes(state, json!({ "week_of": "2026-07-15" })).is_err());
+    }
+
+    #[test]
+    fn week_start_day_tool_rebuckets() {
+        let (state, key_a, _) = seeded_state();
+        tool_plan_meal(state.clone(), json!({ "date": "2026-07-19", "recipe_key": key_a })).unwrap(); // Sun
+
+        let out = tool_set_week_start_day(state.clone(), json!({ "day": "saturday" })).unwrap();
+        assert_eq!(out["week_start_day"], "saturday");
+
+        // The Sunday meal now lives in the Saturday-start week of 07-18.
+        let got = tool_get_meal_plan(state.clone(), json!({ "week_of": "2026-07-19" })).unwrap();
+        assert_eq!(got["week_start"], "2026-07-18");
+        assert_eq!(got["week_start_day"], "saturday");
+        assert_eq!(got["days"][1]["meals"][0]["title"], "Soup");
+
+        assert!(tool_set_week_start_day(state, json!({ "day": "someday" })).is_err());
+    }
+
+    #[test]
+    fn build_plan_trip_tool() {
+        let (state, key_a, _) = seeded_state();
+
+        // No recipe meals yet → refuses.
+        assert!(tool_build_plan_trip(state.clone(), json!({ "week_of": "2026-07-15" })).is_err());
+
+        tool_plan_meal(state.clone(), json!({ "date": "2026-07-15", "recipe_key": key_a, "multiplier": 2 })).unwrap();
+        let out = tool_build_plan_trip(state.clone(), json!({ "week_of": "2026-07-15" })).unwrap();
+        let trip_id = out["trip_id"].as_str().unwrap();
+        assert!(out["trip_url"].as_str().unwrap().contains(trip_id));
+        assert_eq!(out["recipes"][0]["multiplier"], 2.0);
+        assert!(!out["to_buy"].as_array().unwrap().is_empty());
+
+        // The trip is linked to the plan and is the active trip.
+        let got = tool_get_meal_plan(state.clone(), json!({ "week_of": "2026-07-15" })).unwrap();
+        assert_eq!(got["trip"]["id"], trip_id);
+        assert_eq!(shopping::active_trip(&state.db).unwrap().id, trip_id);
     }
 }

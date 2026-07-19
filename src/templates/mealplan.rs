@@ -8,11 +8,11 @@
 //! edits POST to `/api/plan/*` then reload — same simple model as the rest of
 //! the app.
 
-use crate::mealplan::MealPlan;
+use crate::mealplan::{weekday_name, MealPlan};
 use crate::models::Recipe;
 use crate::recipes::html_escape;
 use crate::shopping::SavedTrip;
-use chrono::NaiveDate;
+use chrono::{NaiveDate, Weekday};
 
 use super::components::base_html;
 
@@ -103,11 +103,94 @@ fn trip_panel_html(plan: &MealPlan, linked: Option<&SavedTrip>, recent: &[SavedT
     html
 }
 
+/// The "week starts on" selector, current day preselected.
+fn week_start_select_html(current: Weekday) -> String {
+    let mut html = String::from(
+        r#"<select class="plan-week-start-sel" title="First day of the week" onchange="setWeekStart(this.value)">"#,
+    );
+    for day in [
+        Weekday::Mon,
+        Weekday::Tue,
+        Weekday::Wed,
+        Weekday::Thu,
+        Weekday::Fri,
+        Weekday::Sat,
+        Weekday::Sun,
+    ] {
+        let name = weekday_name(day);
+        let mut label: String = name.chars().take(3).collect();
+        if let Some(c) = label.get_mut(..1) {
+            c.make_ascii_uppercase();
+        }
+        html.push_str(&format!(
+            r#"<option value="{name}"{sel}>Week starts {label}</option>"#,
+            name = name,
+            sel = if day == current { " selected" } else { "" },
+            label = label,
+        ));
+    }
+    html.push_str("</select>");
+    html
+}
+
+/// The brainstorm-notes panel (draft mode) or the locked confirmation bar.
+/// Locked plans keep their notes reachable in a collapsed details block.
+fn notes_html(plan: &MealPlan) -> (String, String) {
+    let rendered = if plan.notes.trim().is_empty() {
+        r#"<p class="plan-notes-empty">Nothing sketched yet — jot ideas for the week here,
+           or have Claude scaffold it over MCP (<code>set_plan_notes</code>).</p>"#
+            .to_string()
+    } else {
+        crate::recipes::render_markdown(&plan.notes)
+    };
+
+    if plan.locked {
+        let bar = r#"<div class="plan-locked-bar">
+            <span>✓ Plan locked in — this week's meals are set.</span>
+            <button class="btn small secondary" onclick="lockPlan(false)">Unlock</button>
+        </div>"#
+            .to_string();
+        let details = if plan.notes.trim().is_empty() {
+            String::new()
+        } else {
+            format!(
+                r#"<details class="plan-notes-details"><summary>Brainstorm notes</summary>
+                <div class="plan-notes-body">{rendered}</div></details>"#,
+                rendered = rendered,
+            )
+        };
+        (bar, details)
+    } else {
+        let panel = format!(
+            r#"<div class="plan-notes-panel">
+    <div class="plan-notes-head">
+        <h2>🧠 This week's brainstorm</h2>
+        <div class="plan-notes-btns">
+            <button class="btn small secondary" onclick="editNotes()">Edit</button>
+            <button class="btn small" onclick="lockPlan(true)">✓ Lock in plan</button>
+        </div>
+    </div>
+    <div id="notes-view" class="plan-notes-body">{rendered}</div>
+    <div id="notes-editor" hidden>
+        <textarea id="notes-text" rows="8" placeholder="Mon: something light… fish twice this week… big batch of chili for leftovers…"></textarea>
+        <div class="plan-notes-btns">
+            <button class="btn small" onclick="saveNotes(this)">Save</button>
+            <button class="btn small secondary" onclick="cancelNotes()">Cancel</button>
+        </div>
+    </div>
+</div>"#,
+            rendered = rendered,
+        );
+        (String::new(), panel)
+    }
+}
+
 pub fn render_plan_page(
     plan: &MealPlan,
     recipes: &[Recipe],
     linked_trip: Option<&SavedTrip>,
     recent_trips: &[SavedTrip],
+    week_start_day: Weekday,
     logged_in: bool,
 ) -> String {
     // Meals bucketed by date for the calendar.
@@ -133,6 +216,8 @@ pub fn render_plan_page(
     let label = html_escape(&week_label(&plan.week_start));
     let prev = shift_week(&plan.week_start, -1);
     let next = shift_week(&plan.week_start, 1);
+    let (locked_bar, notes_block) = notes_html(plan);
+    let notes_json = script_json(&plan.notes);
 
     let content = format!(
         r#"<style>{kcal_css}</style>
@@ -146,8 +231,11 @@ pub fn render_plan_page(
             <a class="btn small secondary" href="/plan/{prev}">‹</a>
             <a class="btn small secondary" href="/plan">Today</a>
             <a class="btn small secondary" href="/plan/{next}">›</a>
+            {week_start_select}
         </div>
     </div>
+    {locked_bar}
+    {notes_block}
     <div id="plan-cal"></div>
     {trip_panel}
 </div>
@@ -206,7 +294,7 @@ pub fn render_plan_page(
 
     KCal.mount(document.getElementById('plan-cal'), {{
         view: 'week',
-        weekStart: 1,
+        weekStart: {ws_num},
         cursor: WEEK,
         header: false,
         renderChip: mealChip,
@@ -298,6 +386,37 @@ pub fn render_plan_page(
             .then(function() {{ location.reload(); }})
             .catch(function(e) {{ alert(e.message); }});
     }};
+
+    // ---- brainstorm notes / lock / week-start setting ----
+    var NOTES = {notes_json};
+    window.editNotes = function() {{
+        document.getElementById('notes-view').hidden = true;
+        var ed = document.getElementById('notes-editor');
+        ed.hidden = false;
+        var ta = document.getElementById('notes-text');
+        ta.value = NOTES;
+        ta.focus();
+    }};
+    window.cancelNotes = function() {{
+        document.getElementById('notes-editor').hidden = true;
+        document.getElementById('notes-view').hidden = false;
+    }};
+    window.saveNotes = function(btn) {{
+        btn.disabled = true;
+        post('/api/plan/notes', {{ week_start: WEEK, notes: document.getElementById('notes-text').value }})
+            .then(function() {{ location.reload(); }})
+            .catch(function(e) {{ btn.disabled = false; alert('Could not save notes: ' + e.message); }});
+    }};
+    window.lockPlan = function(locked) {{
+        post('/api/plan/lock', {{ week_start: WEEK, locked: locked }})
+            .then(function() {{ location.reload(); }})
+            .catch(function(e) {{ alert(e.message); }});
+    }};
+    window.setWeekStart = function(day) {{
+        post('/api/plan/week-start', {{ day: day }})
+            .then(function() {{ location.href = '/plan'; }})
+            .catch(function(e) {{ alert(e.message); location.reload(); }});
+    }};
 }})();
 </script>"#,
         kcal_css = KCAL_CSS,
@@ -306,6 +425,11 @@ pub fn render_plan_page(
         label = label,
         prev = html_escape(&prev),
         next = html_escape(&next),
+        week_start_select = week_start_select_html(week_start_day),
+        locked_bar = locked_bar,
+        notes_block = notes_block,
+        notes_json = notes_json,
+        ws_num = week_start_day.num_days_from_sunday(),
         meals_json = meals_json,
         recipes_json = recipes_json,
         trip_panel = trip_panel_html(plan, linked_trip, recent_trips),

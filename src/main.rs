@@ -44,6 +44,18 @@ async fn main() {
             "/api/plan/trip",
             axum::routing::post(handlers::plan_trip_handler),
         )
+        .route(
+            "/api/plan/notes",
+            axum::routing::post(handlers::plan_set_notes),
+        )
+        .route(
+            "/api/plan/lock",
+            axum::routing::post(handlers::plan_set_lock),
+        )
+        .route(
+            "/api/plan/week-start",
+            axum::routing::post(handlers::plan_set_week_start),
+        )
         // Shopping routes
         .route("/shopping", get(handlers::shopping_page))
         .route(

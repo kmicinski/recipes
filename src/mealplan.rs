@@ -1,23 +1,31 @@
 //! Weekly meal planning.
 //!
-//! A meal plan is one record per week (keyed by the week's Monday,
-//! `YYYY-MM-DD`) holding the meals planned for each day. A meal is either a
-//! reference to a recipe (key + snapshotted title + multiplier) or free text
-//! ("leftovers", "pizza out"). A plan can be associated with one shopping
-//! trip — either built directly from the plan's recipes or linked to an
-//! existing saved trip — so "what we planned" and "what we bought for it"
-//! stay connected.
+//! A meal plan is one record per week (keyed by the week's first day,
+//! `YYYY-MM-DD`) holding the meals planned for each day. Which weekday a week
+//! starts on is a household setting (`week_start_day`, default Monday) stored
+//! in the `plan_settings` tree; changing it re-buckets every stored plan. A
+//! meal is either a reference to a recipe (key + snapshotted title +
+//! multiplier) or free text ("leftovers", "pizza out"). A plan also carries a
+//! free-form `notes` scratchpad (the week's brainstorm — sketched ideas
+//! before they become concrete meals) and a `locked` flag: once the week is
+//! locked in, the UI stops emphasizing the draft/brainstorm and shows the
+//! meals themselves (including on the app's home page). A plan can be
+//! associated with one shopping trip — either built directly from the plan's
+//! recipes or linked to an existing saved trip — so "what we planned" and
+//! "what we bought for it" stay connected.
 //!
 //! Storage follows the `shopping.rs` pattern: serde-JSON blobs in a dedicated
 //! Sled tree (`meal_plans`).
 
 use crate::models::{Recipe, RecipeSelection};
 use crate::shopping;
-use chrono::{Datelike, Duration, NaiveDate};
+use chrono::{Datelike, Duration, NaiveDate, Weekday};
 use serde::{Deserialize, Serialize};
 use sled::Db;
 
 const PLANS_TREE: &str = "meal_plans";
+const SETTINGS_TREE: &str = "plan_settings";
+const WEEK_START_KEY: &str = "week_start_day";
 
 fn default_multiplier() -> f64 {
     1.0
@@ -45,10 +53,18 @@ pub struct PlannedMeal {
 /// A week's meal plan. The Sled key is `week_start`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MealPlan {
-    /// Monday of the week, `YYYY-MM-DD`.
+    /// First day of the week (per the `week_start_day` setting), `YYYY-MM-DD`.
     pub week_start: String,
     #[serde(default)]
     pub meals: Vec<PlannedMeal>,
+    /// Free-form brainstorm scratchpad for the week (markdown) — sketched
+    /// ideas, constraints, "wife wants fish twice", etc.
+    #[serde(default)]
+    pub notes: String,
+    /// A locked plan is final: the UI de-emphasizes the brainstorm and
+    /// surfaces the meals (plan page + home-page strip).
+    #[serde(default)]
+    pub locked: bool,
     /// The shopping trip pursued for this week's plan, if one has been
     /// built from it or linked to it.
     #[serde(default)]
@@ -64,6 +80,8 @@ impl MealPlan {
         Self {
             week_start: week_start.to_string(),
             meals: Vec::new(),
+            notes: String::new(),
+            locked: false,
             trip_id: None,
             created_at: now.clone(),
             updated_at: now,
@@ -75,7 +93,7 @@ impl MealPlan {
         self.meals.iter().filter(|m| m.date == date).collect()
     }
 
-    /// The seven dates of this plan's week, Monday first.
+    /// The seven dates of this plan's week, `week_start` first.
     pub fn week_dates(&self) -> Vec<String> {
         let start = NaiveDate::parse_from_str(&self.week_start, "%Y-%m-%d")
             .expect("week_start is validated on write");
@@ -91,11 +109,140 @@ pub fn parse_date(date: &str) -> Result<NaiveDate, String> {
         .map_err(|_| format!("Invalid date '{}': expected YYYY-MM-DD", date))
 }
 
-/// The Monday of the week containing `date`.
-pub fn week_start_of(date: &str) -> Result<String, String> {
+/// Parse a weekday name ("mon", "Monday", …) into a [`Weekday`].
+pub fn parse_weekday(s: &str) -> Result<Weekday, String> {
+    let t = s.trim().to_lowercase();
+    match t.get(..3) {
+        Some("mon") => Ok(Weekday::Mon),
+        Some("tue") => Ok(Weekday::Tue),
+        Some("wed") => Ok(Weekday::Wed),
+        Some("thu") => Ok(Weekday::Thu),
+        Some("fri") => Ok(Weekday::Fri),
+        Some("sat") => Ok(Weekday::Sat),
+        Some("sun") => Ok(Weekday::Sun),
+        _ => Err(format!(
+            "Invalid weekday '{}': expected monday…sunday",
+            s.trim()
+        )),
+    }
+}
+
+/// Canonical lowercase name for a weekday, matching what [`parse_weekday`] accepts.
+pub fn weekday_name(day: Weekday) -> &'static str {
+    match day {
+        Weekday::Mon => "monday",
+        Weekday::Tue => "tuesday",
+        Weekday::Wed => "wednesday",
+        Weekday::Thu => "thursday",
+        Weekday::Fri => "friday",
+        Weekday::Sat => "saturday",
+        Weekday::Sun => "sunday",
+    }
+}
+
+/// The household's configured first day of the week (default Monday).
+pub fn week_start_day(db: &Db) -> Weekday {
+    db.open_tree(SETTINGS_TREE)
+        .ok()
+        .and_then(|t| t.get(WEEK_START_KEY).ok().flatten())
+        .and_then(|v| String::from_utf8(v.to_vec()).ok())
+        .and_then(|s| parse_weekday(&s).ok())
+        .unwrap_or(Weekday::Mon)
+}
+
+/// The first day of the week containing `date`, for a week starting on `start`.
+pub fn week_start_of(date: &str, start: Weekday) -> Result<String, String> {
     let d = parse_date(date)?;
-    let monday = d - Duration::days(d.weekday().num_days_from_monday() as i64);
-    Ok(monday.format("%Y-%m-%d").to_string())
+    let back = (7 + d.weekday().num_days_from_monday() as i64
+        - start.num_days_from_monday() as i64)
+        % 7;
+    Ok((d - Duration::days(back)).format("%Y-%m-%d").to_string())
+}
+
+/// [`week_start_of`] using the configured [`week_start_day`].
+pub fn week_of(db: &Db, date: &str) -> Result<String, String> {
+    week_start_of(date, week_start_day(db))
+}
+
+/// Change the first-day-of-week setting and re-bucket every stored plan so
+/// each meal lands in the week (per the new start day) containing its date.
+/// A plan's notes, lock state, and trip link follow the new week that
+/// overlaps the old week the most (notes are concatenated if two old weeks
+/// merge), so a round-trip through settings restores them alongside their
+/// meals. Returns the number of plans after re-bucketing.
+pub fn set_week_start_day(db: &Db, day: Weekday) -> Result<usize, String> {
+    let old = week_start_day(db);
+    let settings = db
+        .open_tree(SETTINGS_TREE)
+        .map_err(|e| format!("DB error: {}", e))?;
+    settings
+        .insert(WEEK_START_KEY, weekday_name(day).as_bytes())
+        .map_err(|e| format!("DB error: {}", e))?;
+    if old == day {
+        let tree = db
+            .open_tree(PLANS_TREE)
+            .map_err(|e| format!("DB error: {}", e))?;
+        return Ok(tree.len());
+    }
+
+    let tree = db
+        .open_tree(PLANS_TREE)
+        .map_err(|e| format!("DB error: {}", e))?;
+    let plans: Vec<MealPlan> = tree
+        .iter()
+        .filter_map(|kv| kv.ok())
+        .filter_map(|(_, v)| serde_json::from_slice(&v).ok())
+        .collect();
+
+    let mut rebucketed: std::collections::BTreeMap<String, MealPlan> = Default::default();
+    for plan in &plans {
+        // The new week containing the old start covers `7 - offset` of the old
+        // week's days; the next new week covers the remaining `offset`.
+        let anchor = week_start_of(&plan.week_start, day)?;
+        let offset = (parse_date(&plan.week_start)? - parse_date(&anchor)?).num_days();
+        let home = if offset <= 3 {
+            anchor
+        } else {
+            (parse_date(&anchor)? + Duration::days(7))
+                .format("%Y-%m-%d")
+                .to_string()
+        };
+        let has_meta = !plan.notes.trim().is_empty() || plan.locked || plan.trip_id.is_some();
+        if has_meta {
+            let entry = rebucketed
+                .entry(home.clone())
+                .or_insert_with(|| MealPlan::empty(&home));
+            if !plan.notes.trim().is_empty() {
+                if entry.notes.trim().is_empty() {
+                    entry.notes = plan.notes.clone();
+                } else {
+                    entry.notes = format!("{}\n\n{}", entry.notes, plan.notes);
+                }
+            }
+            if entry.trip_id.is_none() {
+                entry.trip_id = plan.trip_id.clone();
+            }
+            entry.locked = entry.locked || plan.locked;
+            if plan.created_at < entry.created_at {
+                entry.created_at = plan.created_at.clone();
+            }
+        }
+        for meal in &plan.meals {
+            let week = week_start_of(&meal.date, day)?;
+            rebucketed
+                .entry(week.clone())
+                .or_insert_with(|| MealPlan::empty(&week))
+                .meals
+                .push(meal.clone());
+        }
+    }
+
+    tree.clear().map_err(|e| format!("DB error: {}", e))?;
+    let count = rebucketed.len();
+    for (_, mut plan) in rebucketed {
+        save_plan(db, &mut plan)?;
+    }
+    Ok(count)
 }
 
 /// Today's date in the server's local timezone.
@@ -103,9 +250,9 @@ pub fn today() -> String {
     chrono::Local::now().date_naive().format("%Y-%m-%d").to_string()
 }
 
-/// Load the plan for the week containing `week_start` (which must already be
-/// a Monday — use [`week_start_of`] to normalize). Returns an empty plan if
-/// none has been saved yet.
+/// Load the plan for the week starting at `week_start` (which must already be
+/// a week's first day — use [`week_of`] to normalize). Returns an empty plan
+/// if none has been saved yet.
 pub fn load_plan(db: &Db, week_start: &str) -> MealPlan {
     let Ok(tree) = db.open_tree(PLANS_TREE) else {
         return MealPlan::empty(week_start);
@@ -139,7 +286,7 @@ pub fn add_meal(
     title: Option<&str>,
     multiplier: f64,
 ) -> Result<MealPlan, String> {
-    let week = week_start_of(date)?;
+    let week = week_of(db, date)?;
     let (resolved_key, resolved_title) = match recipe_key.filter(|k| !k.trim().is_empty()) {
         Some(key) => {
             let recipe = recipes
@@ -177,7 +324,7 @@ pub fn add_meal(
 /// Remove a meal by id from the week containing `date`. Returns the updated
 /// plan, or `Ok(None)` if no such meal exists.
 pub fn remove_meal(db: &Db, date: &str, meal_id: &str) -> Result<Option<MealPlan>, String> {
-    let week = week_start_of(date)?;
+    let week = week_of(db, date)?;
     let mut plan = load_plan(db, &week);
     let before = plan.meals.len();
     plan.meals.retain(|m| m.id != meal_id);
@@ -188,10 +335,29 @@ pub fn remove_meal(db: &Db, date: &str, meal_id: &str) -> Result<Option<MealPlan
     Ok(Some(plan))
 }
 
+/// Replace the brainstorm notes for the week containing `date`.
+pub fn set_notes(db: &Db, date: &str, notes: &str) -> Result<MealPlan, String> {
+    let week = week_of(db, date)?;
+    let mut plan = load_plan(db, &week);
+    plan.notes = notes.to_string();
+    save_plan(db, &mut plan)?;
+    Ok(plan)
+}
+
+/// Lock (or unlock) the plan for the week containing `date`. A locked plan
+/// is final — the UI shows the meals rather than the brainstorm.
+pub fn set_locked(db: &Db, date: &str, locked: bool) -> Result<MealPlan, String> {
+    let week = week_of(db, date)?;
+    let mut plan = load_plan(db, &week);
+    plan.locked = locked;
+    save_plan(db, &mut plan)?;
+    Ok(plan)
+}
+
 /// Associate (or, with `None`, dissociate) a shopping trip with a week's plan.
 /// The trip must exist when linking.
 pub fn link_trip(db: &Db, week_start: &str, trip_id: Option<&str>) -> Result<MealPlan, String> {
-    let week = week_start_of(week_start)?;
+    let week = week_of(db, week_start)?;
     if let Some(id) = trip_id {
         if shopping::load_trip(db, id).is_none() {
             return Err(format!("No such trip: {}", id));
@@ -232,7 +398,7 @@ pub fn build_trip_for_week(
     recipes: &[Recipe],
     week_start: &str,
 ) -> Result<String, String> {
-    let week = week_start_of(week_start)?;
+    let week = week_of(db, week_start)?;
     let plan = load_plan(db, &week);
     let selections = plan_selections(&plan);
     if selections.is_empty() {
@@ -283,15 +449,103 @@ mod tests {
     }
 
     #[test]
-    fn week_start_normalizes_to_monday() {
-        assert_eq!(week_start_of("2026-07-13").unwrap(), "2026-07-13"); // Mon
-        assert_eq!(week_start_of("2026-07-15").unwrap(), "2026-07-13"); // Wed
-        assert_eq!(week_start_of("2026-07-19").unwrap(), "2026-07-13"); // Sun
-        assert_eq!(week_start_of("2026-07-20").unwrap(), "2026-07-20"); // next Mon
-        assert_eq!(week_start_of("2026-01-01").unwrap(), "2025-12-29"); // year boundary
-        assert!(week_start_of("garbage").is_err());
+    fn week_start_normalizes_to_monday_by_default() {
+        let m = Weekday::Mon;
+        assert_eq!(week_start_of("2026-07-13", m).unwrap(), "2026-07-13"); // Mon
+        assert_eq!(week_start_of("2026-07-15", m).unwrap(), "2026-07-13"); // Wed
+        assert_eq!(week_start_of("2026-07-19", m).unwrap(), "2026-07-13"); // Sun
+        assert_eq!(week_start_of("2026-07-20", m).unwrap(), "2026-07-20"); // next Mon
+        assert_eq!(week_start_of("2026-01-01", m).unwrap(), "2025-12-29"); // year boundary
+        assert!(week_start_of("garbage", m).is_err());
         // chrono is lenient about zero-padding; the output is still canonical.
-        assert_eq!(week_start_of("2026-7-3").unwrap(), "2026-06-29");
+        assert_eq!(week_start_of("2026-7-3", m).unwrap(), "2026-06-29");
+    }
+
+    #[test]
+    fn week_start_honors_arbitrary_start_days() {
+        // 2026-07-19 is a Sunday.
+        assert_eq!(week_start_of("2026-07-19", Weekday::Sun).unwrap(), "2026-07-19");
+        assert_eq!(week_start_of("2026-07-19", Weekday::Sat).unwrap(), "2026-07-18");
+        assert_eq!(week_start_of("2026-07-19", Weekday::Wed).unwrap(), "2026-07-15");
+        // Wednesday, Wed-start: is its own week start.
+        assert_eq!(week_start_of("2026-07-15", Weekday::Wed).unwrap(), "2026-07-15");
+        // Tuesday, Wed-start: previous Wednesday.
+        assert_eq!(week_start_of("2026-07-14", Weekday::Wed).unwrap(), "2026-07-08");
+    }
+
+    #[test]
+    fn parse_weekday_and_names_round_trip() {
+        for day in [
+            Weekday::Mon,
+            Weekday::Tue,
+            Weekday::Wed,
+            Weekday::Thu,
+            Weekday::Fri,
+            Weekday::Sat,
+            Weekday::Sun,
+        ] {
+            assert_eq!(parse_weekday(weekday_name(day)).unwrap(), day);
+        }
+        assert_eq!(parse_weekday("SAT").unwrap(), Weekday::Sat);
+        assert_eq!(parse_weekday(" Sunday ").unwrap(), Weekday::Sun);
+        assert!(parse_weekday("noday").is_err());
+        assert!(parse_weekday("").is_err());
+    }
+
+    #[test]
+    fn week_start_day_setting_persists_and_rebuckets() {
+        let (_dir, db) = temp_db();
+        assert_eq!(week_start_day(&db), Weekday::Mon);
+
+        // Plan a Mon-start week: meals on Wed and Sun, notes, locked.
+        add_meal(&db, &[], "2026-07-15", None, Some("Tacos"), 1.0).unwrap(); // Wed
+        add_meal(&db, &[], "2026-07-19", None, Some("Soup"), 1.0).unwrap(); // Sun
+        set_notes(&db, "2026-07-15", "fish twice this week").unwrap();
+        set_locked(&db, "2026-07-15", true).unwrap();
+
+        // Switch to Saturday-start weeks.
+        set_week_start_day(&db, Weekday::Sat).unwrap();
+        assert_eq!(week_start_day(&db), Weekday::Sat);
+
+        // Wed 07-15 now belongs to the Sat 07-11 week; Sun 07-19 to Sat 07-18.
+        let wk1 = load_plan(&db, "2026-07-11");
+        assert_eq!(wk1.meals.len(), 1);
+        assert_eq!(wk1.meals[0].title, "Tacos");
+        // Notes + lock followed the week containing the old start date (Mon 07-13).
+        assert_eq!(wk1.notes, "fish twice this week");
+        assert!(wk1.locked);
+        let wk2 = load_plan(&db, "2026-07-18");
+        assert_eq!(wk2.meals.len(), 1);
+        assert_eq!(wk2.meals[0].title, "Soup");
+        assert!(!wk2.locked);
+
+        // week_of now buckets by Saturday.
+        assert_eq!(week_of(&db, "2026-07-19").unwrap(), "2026-07-18");
+
+        // Switching back re-merges everything into the Monday week.
+        set_week_start_day(&db, Weekday::Mon).unwrap();
+        let back = load_plan(&db, "2026-07-13");
+        assert_eq!(back.meals.len(), 2);
+        assert_eq!(back.notes, "fish twice this week");
+        assert!(back.locked);
+    }
+
+    #[test]
+    fn notes_and_lock_round_trip() {
+        let (_dir, db) = temp_db();
+        let plan = set_notes(&db, "2026-07-15", "ideas: pasta, curry").unwrap();
+        assert_eq!(plan.week_start, "2026-07-13");
+        assert_eq!(plan.notes, "ideas: pasta, curry");
+        assert!(!plan.locked);
+
+        let plan = set_locked(&db, "2026-07-19", true).unwrap();
+        assert_eq!(plan.week_start, "2026-07-13"); // same week
+        assert!(plan.locked);
+        assert_eq!(plan.notes, "ideas: pasta, curry"); // notes preserved
+
+        let plan = set_locked(&db, "2026-07-13", false).unwrap();
+        assert!(!plan.locked);
+        assert!(set_notes(&db, "bad-date", "x").is_err());
     }
 
     #[test]

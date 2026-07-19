@@ -63,9 +63,15 @@ pub async fn index(State(state): State<Arc<AppState>>, jar: CookieJar) -> Html<S
     let recipes = state.load_recipes();
     let pantry_items: HashSet<String> = pantry::list(&state.db).into_iter().collect();
     let ready_info = compute_ready_info(&recipes, &pantry_items);
+    // A locked-in plan for the current week gets a "this week's meals" strip.
+    let this_week = mealplan::week_of(&state.db, &mealplan::today())
+        .ok()
+        .map(|week| mealplan::load_plan(&state.db, &week))
+        .filter(|p| p.locked && !p.meals.is_empty());
     Html(crate::templates::recipe_list::render_recipe_list(
         &recipes,
         &ready_info,
+        this_week.as_ref(),
         logged_in,
     ))
 }
@@ -673,6 +679,7 @@ fn render_plan_for_week(state: &AppState, week_start: &str, logged_in: bool) -> 
         &recipes,
         linked.as_ref(),
         &recent,
+        mealplan::week_start_day(&state.db),
         logged_in,
     ))
 }
@@ -680,20 +687,20 @@ fn render_plan_for_week(state: &AppState, week_start: &str, logged_in: bool) -> 
 /// This week's meal plan.
 pub async fn plan_page(State(state): State<Arc<AppState>>, jar: CookieJar) -> Response {
     let logged_in = is_logged_in(&jar);
-    let week = mealplan::week_start_of(&mealplan::today())
+    let week = mealplan::week_of(&state.db, &mealplan::today())
         .expect("today is always a valid date");
     render_plan_for_week(&state, &week, logged_in).into_response()
 }
 
 /// The meal plan for the week containing `{date}`. Canonical URLs use the
-/// week's Monday; any other day redirects there.
+/// week's first day; any other day redirects there.
 pub async fn plan_week_page(
     Path(date): Path<String>,
     State(state): State<Arc<AppState>>,
     jar: CookieJar,
 ) -> Response {
     let logged_in = is_logged_in(&jar);
-    match mealplan::week_start_of(&date) {
+    match mealplan::week_of(&state.db, &date) {
         Ok(week) if week == date => render_plan_for_week(&state, &week, logged_in).into_response(),
         Ok(week) => Redirect::to(&format!("/plan/{}", week)).into_response(),
         Err(_) => (
@@ -751,6 +758,74 @@ pub async fn plan_remove_meal(
         Ok(Some(_)) => axum::Json(serde_json::json!({ "ok": true })).into_response(),
         Ok(None) => (StatusCode::NOT_FOUND, "No such meal").into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct PlanNotesRequest {
+    pub week_start: String,
+    pub notes: String,
+}
+
+/// Replace the week's brainstorm notes.
+pub async fn plan_set_notes(
+    State(state): State<Arc<AppState>>,
+    axum::Json(body): axum::Json<PlanNotesRequest>,
+) -> Response {
+    match mealplan::set_notes(&state.db, &body.week_start, &body.notes) {
+        Ok(plan) => axum::Json(serde_json::json!({
+            "ok": true,
+            "week_start": plan.week_start,
+        }))
+        .into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct PlanLockRequest {
+    pub week_start: String,
+    pub locked: bool,
+}
+
+/// Lock in (or unlock) the week's plan.
+pub async fn plan_set_lock(
+    State(state): State<Arc<AppState>>,
+    axum::Json(body): axum::Json<PlanLockRequest>,
+) -> Response {
+    match mealplan::set_locked(&state.db, &body.week_start, body.locked) {
+        Ok(plan) => axum::Json(serde_json::json!({
+            "ok": true,
+            "week_start": plan.week_start,
+            "locked": plan.locked,
+        }))
+        .into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct WeekStartRequest {
+    pub day: String,
+}
+
+/// Change the first-day-of-week setting (re-buckets all stored plans).
+pub async fn plan_set_week_start(
+    State(state): State<Arc<AppState>>,
+    axum::Json(body): axum::Json<WeekStartRequest>,
+) -> Response {
+    let day = match mealplan::parse_weekday(&body.day) {
+        Ok(d) => d,
+        Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
+    };
+    match mealplan::set_week_start_day(&state.db, day) {
+        Ok(plans) => axum::Json(serde_json::json!({
+            "ok": true,
+            "week_start_day": mealplan::weekday_name(day),
+            "plans": plans,
+        }))
+        .into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
 

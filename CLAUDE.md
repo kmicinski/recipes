@@ -57,12 +57,28 @@ button copies it) is an in-store checklist:
 ## Weekly meal plan (`src/mealplan.rs` + `/plan`)
 
 One `MealPlan` record per week (Sled tree `meal_plans`, keyed by the week's
-**Monday** `YYYY-MM-DD`; `mealplan::week_start_of` normalizes any date).
+**first day** `YYYY-MM-DD`; `mealplan::week_of` normalizes any date). Which
+weekday a week starts on is a household setting (`plan_settings` tree, key
+`week_start_day`, default Monday) — the plan page has a "Week starts …"
+selector, and changing it **re-buckets every stored plan** (meals follow
+their dates; notes/lock/trip follow the new week overlapping the old one
+most, so a settings round-trip is lossless — see
+`mealplan::set_week_start_day`).
+
 A `PlannedMeal` is either a recipe reference (`recipe_key` + snapshotted
-`title` + `multiplier`) or free text ("leftovers"). Pages: `/plan` (this
-week) and `/plan/{monday}` (canonical — other days redirect). APIs:
-`POST /api/plan/meal` (add), `POST /api/plan/meal/remove`, and
-`POST /api/plan/trip` with `action: "build" | "link" | "unlink"`.
+`title` + `multiplier`) or free text ("leftovers"). A plan also carries
+`notes` (markdown **brainstorm scratchpad** — sketch the week before
+committing to meals; designed for interactive scaffolding over MCP) and a
+`locked` flag: the draft page leads with the brainstorm panel + "Lock in
+plan"; once locked, a green confirmation bar replaces it, notes collapse
+into a `<details>`, and the **home page shows a day-by-day "This Week's
+Meals" strip** (only while the current week's plan is locked and non-empty).
+
+Pages: `/plan` (this week) and `/plan/{start}` (canonical — other days
+redirect). APIs: `POST /api/plan/meal` (add), `POST /api/plan/meal/remove`,
+`POST /api/plan/notes` (replace notes), `POST /api/plan/lock`
+(lock/unlock), `POST /api/plan/week-start` (`{day}` — the setting above),
+and `POST /api/plan/trip` with `action: "build" | "link" | "unlink"`.
 
 **Trip association:** `build` runs the plan's recipe meals through
 `build_shopping_list` → `save_trip`, makes it the **active trip** (banner and
@@ -74,7 +90,8 @@ attaches an existing saved trip (the page lists recent ones to click);
 `src/vendor/kcal.{js,css}` and inlined via `include_str!` (this app serves no
 static files). Canonical source: mycloud repo `/srv/apps/shared/kcal/` — edit
 there and run its `sync.sh`; never edit the vendored copies. The template
-(`templates/mealplan.rs`) mounts it with `view: "week"`, `weekStart: 1`,
+(`templates/mealplan.rs`) mounts it with `view: "week"`, `weekStart` from
+the week-start-day setting (kcal accepts any 0=Sun…6=Sat),
 `header: false` (prev/today/next are server-side links), a `renderChip` for
 meal chips, and `dayFooter` for the per-day ＋ add button.
 
@@ -98,8 +115,14 @@ No SSE — every tool call is a synchronous request/response.
   across recipes, annotated with sources and pantry status; returns `to_buy` / `have` groups and `unknown_keys`
 - `publish_trip(selections, title?, notes?)` — snapshot a trip to a durable short `/t/{slug}` page
 - `list_trips()` / `delete_trip(slug, confirm:true)` — published-trip management
-- `get_meal_plan(week_of?)` — the weekly plan (Mon-Sun days with meals + associated trip summary)
+- `get_meal_plan(week_of?)` — the weekly plan (days with meals, brainstorm `notes`, `locked`,
+  `week_start_day`, associated trip summary)
 - `plan_meal(date, recipe_key?|title?, multiplier?)` / `remove_meal(date, meal_id)` — edit the plan
+- `set_plan_notes(notes, week_of?)` — replace the week's brainstorm scratchpad (markdown)
+- `lock_plan(locked, week_of?)` — lock in / reopen the week (locked = meals surface in the UI)
+- `set_week_start_day(day)` — set the household first-day-of-week (re-buckets all plans)
+- `build_plan_trip(week_of?)` — build + activate + link the week's shopping trip; returns
+  `to_buy` / `already_have`
 - `list_pantry()` / `set_pantry(name, in_pantry)` — binary pantry have/don't-have state
 - `create_recipe(filename, title, servings?, tags?, ingredients, body)` — git-committed
 - `update_recipe(key, title, servings?, tags?, ingredients, body)` — git-committed

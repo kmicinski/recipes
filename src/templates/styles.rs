@@ -919,6 +919,122 @@ h1 { font-size: 1.5rem; }
 }
 .meal-add-btn:hover { color: var(--base01); border-color: var(--base1); }
 
+/* Week-start setting */
+.plan-week-start-sel {
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--muted);
+    border-radius: 6px;
+    padding: 0.25rem 0.4rem;
+    font-size: 0.8rem;
+    cursor: pointer;
+}
+.plan-week-start-sel:hover { color: var(--base01); border-color: var(--base1); }
+
+/* Brainstorm notes panel (draft mode) */
+.plan-notes-panel {
+    margin-bottom: 1rem;
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    padding: 0.9rem 1rem 1rem;
+    background: var(--highlight);
+}
+.plan-notes-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+.plan-notes-head h2 { margin: 0; font-size: 1.05rem; }
+.plan-notes-btns { display: flex; gap: 0.35rem; }
+.plan-notes-body { font-size: 0.9rem; margin-top: 0.5rem; }
+.plan-notes-body > :first-child { margin-top: 0; }
+.plan-notes-body > :last-child { margin-bottom: 0; }
+.plan-notes-empty { color: var(--muted); font-style: italic; }
+#notes-editor textarea {
+    width: 100%;
+    box-sizing: border-box;
+    margin-top: 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--fg);
+    padding: 0.5rem 0.6rem;
+    font-size: 0.9rem;
+    font-family: inherit;
+    resize: vertical;
+}
+#notes-editor .plan-notes-btns { margin-top: 0.5rem; justify-content: flex-end; }
+
+/* Locked-in plan */
+.plan-locked-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+    border: 1px solid color-mix(in srgb, var(--green) 45%, transparent);
+    background: color-mix(in srgb, var(--green) 10%, transparent);
+    border-radius: 8px;
+    padding: 0.55rem 0.9rem;
+    font-weight: 600;
+    color: var(--base01);
+}
+.plan-notes-details { margin-top: 1rem; }
+.plan-notes-details summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; }
+
+/* Home-page "this week" strip (locked plans only) */
+.week-strip {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.75rem 1rem 0.9rem;
+    background: var(--highlight);
+    margin-bottom: 1.25rem;
+}
+.week-strip-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem;
+}
+.week-strip-head .ready-heading { margin: 0; }
+.week-strip-link { font-size: 0.85rem; }
+.week-strip-days {
+    display: flex;
+    gap: 0.6rem;
+    overflow-x: auto;
+    margin-top: 0.6rem;
+    padding-bottom: 0.25rem;
+}
+.week-strip-day {
+    flex: 1 0 7.5rem;
+    min-width: 7.5rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    padding: 0.4rem 0.55rem 0.5rem;
+}
+.week-strip-today { border-color: var(--cyan); box-shadow: 0 0 0 1px var(--cyan) inset; }
+.week-strip-date {
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    margin-bottom: 0.3rem;
+}
+.week-strip-meal {
+    display: block;
+    font-size: 0.85rem;
+    line-height: 1.35;
+    margin-top: 0.15rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 /* Shopping-trip association panel */
 .plan-trip-panel {
     margin-top: 1.25rem;

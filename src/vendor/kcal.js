@@ -13,7 +13,7 @@
  * KCal.mount(el, opts) -> instance
  *   opts:
  *     view          "month" | "week"            (default "month")
- *     weekStart     0 (Sun) | 1 (Mon)           (default 1)
+ *     weekStart     0 (Sun) … 6 (Sat)           (default 1, Mon)
  *     cursor        "YYYY-MM-DD"                (default today)
  *     selected      "YYYY-MM-DD" | null         highlighted cell
  *     padOutMonth   bool (default true)         grey adjacent-month days
@@ -134,7 +134,10 @@
     opts = opts || {};
     var state = {
       view: opts.view === "week" ? "week" : "month",
-      weekStart: opts.weekStart === 0 ? 0 : 1,
+      weekStart:
+        typeof opts.weekStart === "number" && opts.weekStart >= 0 && opts.weekStart <= 6
+          ? Math.floor(opts.weekStart)
+          : 1,
       cursor: opts.cursor || todayISO(),
       selected: opts.selected || null,
       data: {},
