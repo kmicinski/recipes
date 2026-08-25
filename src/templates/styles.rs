@@ -984,6 +984,33 @@ h1 { font-size: 1.5rem; }
 }
 .plan-notes-details { margin-top: 1rem; }
 .plan-notes-details summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; }
+.locked-recipes {
+    margin-top: 1.25rem;
+    border: 2px solid color-mix(in srgb, var(--cyan) 40%, var(--border));
+    border-radius: 8px;
+    background: var(--highlight);
+    padding: 0.9rem 1rem;
+}
+.locked-recipes-head h2 { margin: 0; font-size: 1.1rem; }
+.locked-recipes-head p { margin: 0.2rem 0 0.65rem; color: var(--muted); font-size: 0.85rem; }
+.locked-recipes ul { list-style: none; margin: 0; padding: 0; }
+.locked-recipe-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.55rem 0;
+    border-top: 1px solid var(--border);
+}
+.locked-recipe-main, .locked-recipe-side { display: flex; align-items: center; gap: 0.45rem; }
+.locked-recipe-title { font-weight: 650; }
+.locked-recipe-side { color: var(--muted); font-size: 0.8rem; white-space: nowrap; }
+.locked-recipe-qty { color: var(--muted); font-size: 0.75rem; }
+@media (max-width: 560px) {
+    .locked-recipe-row { align-items: flex-start; }
+    .locked-recipe-main { align-items: flex-start; flex-wrap: wrap; }
+    .locked-recipe-side { flex-direction: column; align-items: flex-end; }
+}
 
 /* Home-page "this week" strip (locked plans only) */
 .week-strip {
@@ -1244,6 +1271,21 @@ h1 { font-size: 1.5rem; }
     font-size: 0.68rem;
     text-transform: capitalize;
 }
+.meal-lanes { display: grid; grid-template-rows: repeat(3, 1fr); gap: 3px; }
+.meal-lane {
+    width: 100%;
+    border: 1px dashed var(--border);
+    border-radius: 5px;
+    padding: 0.28rem 0.2rem;
+    background: color-mix(in srgb, var(--highlight) 72%, transparent);
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 0.7rem;
+}
+.meal-lane:hover { border-color: var(--cyan); color: var(--cyan); background: var(--highlight); }
+.meal-lane.breakfast { border-left: 3px solid #d69e2e; }
+.meal-lane.lunch { border-left: 3px solid #319795; }
+.meal-lane.dinner { border-left: 3px solid #805ad5; }
 @media (max-width: 520px) {
     .deck-meal-counts { grid-template-columns: 1fr; }
 }

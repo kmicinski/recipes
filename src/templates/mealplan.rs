@@ -185,6 +185,62 @@ fn notes_html(plan: &MealPlan) -> (String, String) {
     }
 }
 
+/// A durable, obvious route back to cooking instructions after a plan is
+/// locked. Calendar chips remain useful context, but should not be the only
+/// way to find recipes for food the household has already bought.
+fn locked_recipes_html(plan: &MealPlan) -> String {
+    if !plan.locked {
+        return String::new();
+    }
+    let mut meals: Vec<_> = plan
+        .meals
+        .iter()
+        .filter(|m| m.recipe_key.is_some() || m.book_id.is_some())
+        .collect();
+    if meals.is_empty() {
+        return String::new();
+    }
+    meals.sort_by(|a, b| a.date.cmp(&b.date).then(a.meal_type.cmp(&b.meal_type)));
+    let mut rows = String::new();
+    for meal in meals {
+        let day = NaiveDate::parse_from_str(&meal.date, "%Y-%m-%d")
+            .map(|d| d.format("%A").to_string())
+            .unwrap_or_else(|_| meal.date.clone());
+        let href = match (&meal.recipe_key, &meal.book_id) {
+            (Some(key), _) => format!("/recipe/{}", html_escape(key)),
+            (_, Some(id)) => format!("/book/{}", html_escape(id)),
+            _ => continue,
+        };
+        let quantity = if (meal.multiplier - 1.0).abs() > f64::EPSILON {
+            format!(r#"<span class="locked-recipe-qty">Prep &times;{}</span>"#, meal.multiplier)
+        } else {
+            String::new()
+        };
+        rows.push_str(&format!(
+            r#"<li class="locked-recipe-row">
+                <div class="locked-recipe-main">
+                    <span class="meal-kind">{kind}</span>
+                    <a href="{href}" class="locked-recipe-title">{title}</a>
+                    {quantity}
+                </div>
+                <div class="locked-recipe-side"><span>{day}</span><a class="btn small" href="{href}">View recipe →</a></div>
+            </li>"#,
+            kind = html_escape(&meal.meal_type),
+            href = href,
+            title = html_escape(&meal.title),
+            quantity = quantity,
+            day = html_escape(&day),
+        ));
+    }
+    format!(
+        r#"<section class="locked-recipes">
+            <div class="locked-recipes-head"><div><h2>Recipes for this week</h2><p>Cooking instructions for the meals you planned and shopped for.</p></div></div>
+            <ul>{rows}</ul>
+        </section>"#,
+        rows = rows,
+    )
+}
+
 /// The Shop-with-Claude panel: store toggle + the deterministic copy-paste
 /// block for Claude on the web to shop the list on Instacart. Empty when the
 /// week has nothing to shop for yet.
@@ -253,6 +309,7 @@ pub fn render_plan_page(
     let next = shift_week(&plan.week_start, 1);
     let (locked_bar, notes_block) = notes_html(plan);
     let notes_json = script_json(&plan.notes);
+    let locked_recipes = locked_recipes_html(plan);
 
     // The hot-or-not meal-builder deck, fed by the hidden book. Only offered
     // while the week is a draft and a book corpus is actually loaded.
@@ -298,6 +355,7 @@ pub fn render_plan_page(
     {builder_bar}
     {notes_block}
     <div id="plan-cal"></div>
+    {locked_recipes}
     {trip_panel}
     {claude_panel}
 </div>
@@ -367,9 +425,15 @@ pub fn render_plan_page(
         header: false,
         renderChip: mealChip,
         dayFooter: function(date) {{
-            return '<button class="meal-add-btn" onclick="openPicker(\'' + esc(date) + '\')">＋ add</button>';
+            {day_footer}
         }},
-        onDayClick: function(date) {{ openPicker(date); }},
+        onDayClick: function(date, ev) {{
+            var cell = ev.target.closest('.kcal-day-col');
+            if (!cell) return;
+            var rect = cell.getBoundingClientRect();
+            var fraction = (ev.clientY - rect.top) / Math.max(rect.height, 1);
+            openDeckFor(date, fraction < 0.34 ? 'breakfast' : fraction < 0.67 ? 'lunch' : 'dinner');
+        }},
     }}).setData(MEALS);
 
     function post(url, body) {{
@@ -525,9 +589,19 @@ pub fn render_plan_page(
         meals_json = meals_json,
         recipes_json = recipes_json,
         trip_panel = trip_panel_html(plan, linked_trip, recent_trips),
+        locked_recipes = locked_recipes,
         claude_panel = shop_claude_panel_html(store, shop_block),
         deck_overlay = deck_overlay,
         deck_script = deck_script,
+        day_footer = if show_builder {
+            r#"return '<div class="meal-lanes">' +
+                '<button data-kcal-skip class="meal-lane breakfast" onclick="openDeckFor(\'' + esc(date) + '\',\'breakfast\')">＋ Breakfast</button>' +
+                '<button data-kcal-skip class="meal-lane lunch" onclick="openDeckFor(\'' + esc(date) + '\',\'lunch\')">＋ Lunch</button>' +
+                '<button data-kcal-skip class="meal-lane dinner" onclick="openDeckFor(\'' + esc(date) + '\',\'dinner\')">＋ Dinner</button>' +
+                '</div>';"#
+        } else {
+            "return '';"
+        },
     );
 
     base_html("Meal Plan", &content, logged_in)
@@ -554,5 +628,24 @@ mod tests {
         let v = serde_json::json!({ "t": "</script><script>alert(1)</script>" });
         let s = script_json(&v);
         assert!(!s.contains("</script>"));
+    }
+
+    #[test]
+    fn locked_plan_has_prominent_recipe_links() {
+        let plan: MealPlan = serde_json::from_value(serde_json::json!({
+            "week_start": "2026-08-24",
+            "locked": true,
+            "created_at": "2026-08-20T00:00:00Z",
+            "meals": [{
+                "id": "m1", "date": "2026-08-25", "title": "Breakfast Bowls",
+                "book_id": "bk-0001", "multiplier": 2, "meal_type": "breakfast"
+            }]
+        })).unwrap();
+        let html = locked_recipes_html(&plan);
+        assert!(html.contains("Recipes for this week"));
+        assert!(html.contains(r#"href="/book/bk-0001""#));
+        assert!(html.contains("View recipe"));
+        assert!(html.contains("Prep &times;2"));
+        assert!(html.contains("Tuesday"));
     }
 }

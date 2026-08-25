@@ -1038,6 +1038,8 @@ pub struct BookPickRequest {
     pub multiplier: Option<f64>,
     #[serde(default)]
     pub meal_type: Option<String>,
+    #[serde(default)]
+    pub date: Option<String>,
 }
 
 /// "Hot": plan the book recipe on the week's emptiest day.
@@ -1055,7 +1057,15 @@ pub async fn book_pick(
         Ok(t) => t,
         Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
     };
-    let date = book::assign_date_for_type(&plan, meal_type);
+    let date = if let Some(date) = body.date.as_deref() {
+        match mealplan::week_of(&state.db, date) {
+            Ok(date_week) if date_week == week => date.to_string(),
+            Ok(_) => return (StatusCode::BAD_REQUEST, "Chosen day is outside this week").into_response(),
+            Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
+        }
+    } else {
+        book::assign_date_for_type(&plan, meal_type)
+    };
     match mealplan::add_meal_entry_typed(
         &state.db,
         &[],

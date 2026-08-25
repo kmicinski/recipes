@@ -210,6 +210,7 @@ pub fn deck_script(week_start: &str) -> String {
     var DECK_WEEK = '{week}';
     var cands = [], idx = 0, picked = [], target = 0, inflight = false;
     var mealTypes = [], typeIndex = 0, currentType = 'dinner', typePicked = 0;
+    var selectedDate = null;
 
     function desc(s) {{
         return String(s).replace(/[&<>"']/g, function(c) {{
@@ -233,9 +234,19 @@ pub fn deck_script(week_start: &str) -> String {
     }}
 
     window.openDeck = function() {{
+        selectedDate = null;
         document.getElementById('book-deck').hidden = false;
         show('deck-setup');
         document.getElementById('deck-prompt').focus();
+    }};
+    window.openDeckFor = function(date, mealType) {{
+        selectedDate = date;
+        picked = [];
+        mealTypes = [{{ kind: mealType, count: 1 }}];
+        typeIndex = 0;
+        target = 1;
+        document.getElementById('book-deck').hidden = false;
+        dealType(null);
     }};
     window.closeDeck = function() {{
         document.getElementById('book-deck').hidden = true;
@@ -336,7 +347,7 @@ pub fn deck_script(week_start: &str) -> String {
         if (!c || inflight) return;
         inflight = true;
         animateCard(1);
-        dpost('/api/book/pick', {{ week_start: DECK_WEEK, book_id: c.id, meal_type: currentType }})
+        dpost('/api/book/pick', {{ week_start: DECK_WEEK, book_id: c.id, meal_type: currentType, date: selectedDate }})
             .then(function(d) {{
                 inflight = false;
                 var day = dayName(d.date);
