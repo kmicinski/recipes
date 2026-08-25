@@ -285,6 +285,69 @@ pub fn load_all_recipes(content_dir: &PathBuf) -> Vec<Recipe> {
 }
 
 // ============================================================================
+// Filenames
+// ============================================================================
+
+/// Simple slug generation from a title.
+pub fn slugify(s: &str) -> String {
+    s.to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<&str>>()
+        .join("-")
+}
+
+/// A path in `content_dir` for a new recipe named after `title`, suffixed
+/// `-1`, `-2`, … as needed to avoid an existing file.
+pub fn unique_recipe_path(content_dir: &std::path::Path, title: &str) -> PathBuf {
+    let base_slug = {
+        let s = slugify(title);
+        if s.is_empty() {
+            "untitled".to_string()
+        } else {
+            s
+        }
+    };
+
+    for suffix in 0..1000 {
+        let filename = if suffix == 0 {
+            format!("{}.md", base_slug)
+        } else {
+            format!("{}-{}.md", base_slug, suffix)
+        };
+        let candidate = content_dir.join(filename);
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+
+    content_dir.join(format!(
+        "{}-{}.md",
+        base_slug,
+        chrono::Utc::now().timestamp()
+    ))
+}
+
+/// Validate that an explicit recipe filename is a single safe `.md` segment.
+pub fn validate_filename(filename: &str) -> Result<(), String> {
+    if !filename.ends_with(".md") {
+        return Err("filename must end with .md".into());
+    }
+    if filename.contains("..")
+        || filename.contains('/')
+        || filename.contains('\\')
+        || filename.contains('\0')
+        || filename.starts_with('.')
+    {
+        return Err("filename must be a single .md segment".into());
+    }
+    Ok(())
+}
+
+// ============================================================================
 // Git Operations
 // ============================================================================
 

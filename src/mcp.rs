@@ -12,7 +12,7 @@
 //! update_recipe, delete_recipe, build_shopping_list, list_pantry, set_pantry.
 
 use crate::models::{Recipe, RecipeSelection};
-use crate::recipes::{generate_key, git_commit, git_rm_commit, serialize_recipe};
+use crate::recipes::{generate_key, git_commit, git_rm_commit, serialize_recipe, validate_filename};
 use crate::{pantry, shopping, validate_path_within, AppState};
 
 use axum::{
@@ -409,16 +409,50 @@ fn tool_catalog() -> Vec<Value> {
         }),
         json!({
             "name": "plan_meal",
-            "description": "Add a meal to the weekly plan on a specific date. Provide `recipe_key` for a recipe from the collection (its title is snapshotted), or a free-text `title` (e.g. 'leftovers'). `multiplier` scales servings when a shopping trip is built from the plan.",
+            "description": "Add a meal to the weekly plan on a specific date. Provide `recipe_key` for a recipe from the collection (its title is snapshotted), `book_id` for a hidden-book recipe (bk-…), or a free-text `title` (e.g. 'leftovers'). `meal_type` is breakfast, lunch, or dinner (default dinner); `multiplier` scales servings when a shopping trip is built.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "date": {"type": "string", "description": "YYYY-MM-DD"},
                     "recipe_key": {"type": "string"},
+                    "book_id": {"type": "string", "description": "Hidden-book recipe id (bk-…)"},
                     "title": {"type": "string"},
-                    "multiplier": {"type": "number", "default": 1}
+                    "multiplier": {"type": "number", "default": 1},
+                    "meal_type": {"type": "string", "enum": ["breakfast", "lunch", "dinner"], "default": "dinner"}
                 },
                 "required": ["date"]
+            }
+        }),
+        json!({
+            "name": "browse_book",
+            "description": "Browse the HIDDEN recipe book — a large corpus of pre-generated meal-kit-style recipes (minimal prep/cleanup, ~20 min day-of with weekend batch prep) that are NOT part of the user's collection and never appear in list_recipes/search_recipes. Ranks the book against an optional free-text `query` (week-prompt style; `-token` excludes). Returns summaries with id (bk-…), title, tags, facets (protein/method/cuisine), and ingredient_count. Book recipes can be planned via plan_meal(book_id) and only join the collection via promote_book_recipe.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 200}
+                }
+            }
+        }),
+        json!({
+            "name": "read_book_recipe",
+            "description": "Read one hidden-book recipe by id (bk-…): title, tags, facets, servings, structured ingredients, and the markdown body (prep-ahead + day-of sections).",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "id": {"type": "string"} },
+                "required": ["id"]
+            }
+        }),
+        json!({
+            "name": "promote_book_recipe",
+            "description": "Promote a hidden-book recipe into the user's collection: writes the markdown file, commits to git, and rewrites any planned meals from the book id to the new recipe key. Idempotent — promoting twice returns the existing recipe. Optional `filename` (single .md segment); defaults to a slug of the title.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "filename": {"type": "string"}
+                },
+                "required": ["id"]
             }
         }),
         json!({
@@ -485,6 +519,9 @@ async fn handle_tools_call(state: Arc<AppState>, params: Value) -> Result<Value,
         "lock_plan" => Ok(tool_text(&tool_lock_plan(state, args)?)),
         "set_week_start_day" => Ok(tool_text(&tool_set_week_start_day(state, args)?)),
         "build_plan_trip" => Ok(tool_text(&tool_build_plan_trip(state, args)?)),
+        "browse_book" => Ok(tool_text(&tool_browse_book(state, args)?)),
+        "read_book_recipe" => Ok(tool_text(&tool_read_book_recipe(state, args)?)),
+        "promote_book_recipe" => Ok(tool_text(&tool_promote_book_recipe(state, args)?)),
         "create_recipe" => Ok(tool_text(&tool_create_recipe(state, args)?)),
         "update_recipe" => Ok(tool_text(&tool_update_recipe(state, args)?)),
         "delete_recipe" => Ok(tool_text(&tool_delete_recipe(state, args)?)),
@@ -789,6 +826,7 @@ fn meal_json(m: &crate::mealplan::PlannedMeal) -> Value {
         "date": m.date,
         "title": m.title,
         "recipe_key": m.recipe_key,
+        "book_id": m.book_id,
         "multiplier": m.multiplier,
     })
 }
@@ -884,7 +922,8 @@ fn tool_build_plan_trip(state: Arc<AppState>, args: Value) -> Result<Value, Stri
         .map(str::to_string)
         .unwrap_or_else(crate::mealplan::today);
     let recipes = state.load_recipes();
-    let trip_id = crate::mealplan::build_trip_for_week(&state.db, &recipes, &week_of)?;
+    let book = state.load_book();
+    let trip_id = crate::mealplan::build_trip_for_week(&state.db, &recipes, &book, &week_of)?;
     let trip = shopping::load_trip(&state.db, &trip_id)
         .ok_or_else(|| "trip vanished after save".to_string())?;
     let (to_buy, have): (Vec<_>, Vec<_>) = trip.items.iter().partition(|i| !i.in_pantry);
@@ -908,10 +947,15 @@ fn tool_plan_meal(state: Arc<AppState>, args: Value) -> Result<Value, String> {
         .and_then(|v| v.as_str())
         .ok_or_else(|| "missing 'date'".to_string())?;
     let recipe_key = args.get("recipe_key").and_then(|v| v.as_str());
+    let book_id = args.get("book_id").and_then(|v| v.as_str());
     let title = args.get("title").and_then(|v| v.as_str());
     let multiplier = args.get("multiplier").and_then(|v| v.as_f64()).unwrap_or(1.0);
+    let meal_type = args.get("meal_type").and_then(|v| v.as_str()).unwrap_or("dinner");
     let recipes = state.load_recipes();
-    let plan = crate::mealplan::add_meal(&state.db, &recipes, date, recipe_key, title, multiplier)?;
+    let book = state.load_book();
+    let plan = crate::mealplan::add_meal_entry_typed(
+        &state.db, &recipes, &book, date, recipe_key, book_id, title, multiplier, meal_type,
+    )?;
     Ok(plan_json(&state, &plan))
 }
 
@@ -975,19 +1019,73 @@ fn parse_ingredients(v: &Value) -> Result<Vec<crate::models::Ingredient>, String
     Ok(out)
 }
 
-fn validate_filename(filename: &str) -> Result<(), String> {
-    if !filename.ends_with(".md") {
-        return Err("filename must end with .md".into());
-    }
-    if filename.contains("..")
-        || filename.contains('/')
-        || filename.contains('\\')
-        || filename.contains('\0')
-        || filename.starts_with('.')
-    {
-        return Err("filename must be a single .md segment".into());
-    }
-    Ok(())
+// ============================================================================
+// Hidden recipe book tools
+// ============================================================================
+
+fn tool_browse_book(state: Arc<AppState>, args: Value) -> Result<Value, String> {
+    let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
+    let book = state.load_book();
+    let ranked = crate::book::rank(query, &book, &std::collections::HashSet::new(), limit);
+    let results: Vec<Value> = ranked
+        .iter()
+        .map(|b| {
+            json!({
+                "id": b.id,
+                "title": b.title,
+                "tags": b.tags,
+                "servings": b.servings,
+                "protein": b.protein,
+                "method": b.method,
+                "cuisine": b.cuisine,
+                "ingredient_count": b.ingredients.len(),
+            })
+        })
+        .collect();
+    Ok(json!({
+        "book_size": book.len(),
+        "query": query,
+        "results": results,
+    }))
+}
+
+fn tool_read_book_recipe(state: Arc<AppState>, args: Value) -> Result<Value, String> {
+    let id = args
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "missing 'id'".to_string())?;
+    let book = state.load_book();
+    let b = book
+        .iter()
+        .find(|b| b.id == id)
+        .ok_or_else(|| format!("book recipe not found: {}", id))?;
+    Ok(json!({
+        "id": b.id,
+        "title": b.title,
+        "tags": b.tags,
+        "servings": b.servings,
+        "protein": b.protein,
+        "method": b.method,
+        "cuisine": b.cuisine,
+        "ingredients": b.ingredients.iter().map(|i| json!({
+            "name": i.name, "qty": i.qty, "unit": i.unit,
+        })).collect::<Vec<_>>(),
+        "body": b.body_markdown,
+        "promoted_key": crate::book::promoted_key(&state.db, id),
+    }))
+}
+
+fn tool_promote_book_recipe(state: Arc<AppState>, args: Value) -> Result<Value, String> {
+    let id = args
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "missing 'id'".to_string())?;
+    let filename = args.get("filename").and_then(|v| v.as_str());
+    let recipes = state.load_recipes();
+    let book = state.load_book();
+    let res = crate::book::promote(&state.content_dir, &state.db, &recipes, &book, id, filename)?;
+    serde_json::to_value(&res).map_err(|e| format!("serialize error: {}", e))
 }
 
 fn tool_create_recipe(state: Arc<AppState>, args: Value) -> Result<Value, String> {
@@ -1130,11 +1228,7 @@ mod tests {
         // Leak the tempdir so files survive for the test's lifetime.
         std::mem::forget(dir);
 
-        let state = Arc::new(AppState {
-            content_dir,
-            db,
-            mcp_token: Some("test-token".to_string()),
-        });
+        let state = Arc::new(AppState::for_test(content_dir, db));
         (state, key_a, key_b)
     }
 
@@ -1379,6 +1473,106 @@ mod tests {
         assert_eq!(got["days"][1]["meals"][0]["title"], "Soup");
 
         assert!(tool_set_week_start_day(state, json!({ "day": "someday" })).is_err());
+    }
+
+    /// A seeded state whose book_path points at a real two-recipe corpus.
+    fn state_with_book() -> (Arc<AppState>, String) {
+        let (state, key_a, _) = seeded_state();
+        let dir = tempfile::tempdir().unwrap();
+        let book_path = dir.path().join("book.jsonl");
+        let line = |id: &str, title: &str, protein: &str| {
+            format!(
+                r###"{{"id":"{id}","title":"{title}","servings":4,"tags":["dinner","grill"],"protein":"{protein}","method":"grill","cuisine":"american","ingredients":[{{"name":"onion","qty":1,"unit":"whole"}}],"body_markdown":"## Prep ahead\nChop.\n\n## Day of (~20 min)\nCook."}}"###
+            )
+        };
+        fs::write(
+            &book_path,
+            format!(
+                "{}\n{}\n",
+                line("bk-0001", "Grilled Chicken Bowls", "chicken"),
+                line("bk-0002", "Smash Burgers", "beef"),
+            ),
+        )
+        .unwrap();
+        std::mem::forget(dir);
+        let mut inner = AppState::for_test(state.content_dir.clone(), state.db.clone());
+        inner.book_path = book_path;
+        (Arc::new(inner), key_a)
+    }
+
+    #[test]
+    fn book_tools_in_catalog() {
+        let names: Vec<String> = tool_catalog()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect();
+        for expected in ["browse_book", "read_book_recipe", "promote_book_recipe"] {
+            assert!(names.contains(&expected.to_string()), "missing {}", expected);
+        }
+    }
+
+    #[test]
+    fn browse_and_read_book() {
+        let (state, _) = state_with_book();
+        let out = tool_browse_book(state.clone(), json!({ "query": "chicken" })).unwrap();
+        assert_eq!(out["book_size"], 2);
+        let results = out["results"].as_array().unwrap();
+        assert_eq!(results.len(), 2);
+        // "chicken" is a facet hit for bk-0001 only, so it ranks first.
+        assert_eq!(results[0]["id"], "bk-0001");
+
+        let read = tool_read_book_recipe(state.clone(), json!({ "id": "bk-0002" })).unwrap();
+        assert_eq!(read["title"], "Smash Burgers");
+        assert!(read["body"].as_str().unwrap().contains("Day of"));
+        assert_eq!(read["promoted_key"], json!(null));
+
+        assert!(tool_read_book_recipe(state, json!({ "id": "bk-9999" })).is_err());
+    }
+
+    #[test]
+    fn book_stays_hidden_from_listing_and_search() {
+        let (state, _) = state_with_book();
+        let listed = tool_list_recipes(state.clone(), json!({})).unwrap();
+        assert_eq!(listed["total"], 2); // soup + rice only, no book recipes
+        let found = tool_search_recipes(state, json!({ "query": "burgers" })).unwrap();
+        assert!(found["results"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn plan_and_promote_book_recipe_via_mcp() {
+        let (state, _) = state_with_book();
+
+        // Plan a book meal; it shows up with its book_id and snapshotted title.
+        let plan = tool_plan_meal(
+            state.clone(),
+            json!({ "date": "2026-07-15", "book_id": "bk-0001" }),
+        )
+        .unwrap();
+        let wed = &plan["days"][2]["meals"][0];
+        assert_eq!(wed["title"], "Grilled Chicken Bowls");
+        assert_eq!(wed["book_id"], "bk-0001");
+        assert_eq!(wed["recipe_key"], json!(null));
+
+        // Building the week's trip resolves the book recipe's ingredients.
+        let trip = tool_build_plan_trip(state.clone(), json!({ "week_of": "2026-07-15" })).unwrap();
+        let to_buy = trip["to_buy"].as_array().unwrap();
+        assert!(to_buy.iter().any(|i| i["name"] == "onion"));
+
+        // Promote: file created, git-committed key returned, plan rewritten.
+        let promoted =
+            tool_promote_book_recipe(state.clone(), json!({ "id": "bk-0001" })).unwrap();
+        assert_eq!(promoted["already_promoted"], false);
+        assert_eq!(promoted["rewritten_meals"], 1);
+        let key = promoted["key"].as_str().unwrap().to_string();
+
+        let plan = tool_get_meal_plan(state.clone(), json!({ "week_of": "2026-07-15" })).unwrap();
+        let wed = &plan["days"][2]["meals"][0];
+        assert_eq!(wed["recipe_key"], key.as_str());
+        assert_eq!(wed["book_id"], json!(null));
+
+        // Now a real recipe, visible in the collection.
+        let listed = tool_list_recipes(state, json!({ "query": "Grilled" })).unwrap();
+        assert_eq!(listed["total"], 1);
     }
 
     #[test]

@@ -23,13 +23,18 @@ fn this_week_strip(plan: &MealPlan) -> String {
             .iter()
             .map(|m| {
                 let title = html_escape(&m.title);
-                match &m.recipe_key {
-                    Some(key) => format!(
+                match (&m.recipe_key, &m.book_id) {
+                    (Some(key), _) => format!(
                         r#"<a class="week-strip-meal" href="/recipe/{key}">{title}</a>"#,
                         key = html_escape(key),
                         title = title,
                     ),
-                    None => format!(r#"<span class="week-strip-meal">{}</span>"#, title),
+                    (None, Some(id)) => format!(
+                        r#"<a class="week-strip-meal week-strip-book" href="/book/{id}">📖 {title}</a>"#,
+                        id = html_escape(id),
+                        title = title,
+                    ),
+                    (None, None) => format!(r#"<span class="week-strip-meal">{}</span>"#, title),
                 }
             })
             .collect();

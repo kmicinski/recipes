@@ -1,5 +1,6 @@
 //! HTML templates for the recipes application.
 
+pub mod book;
 pub mod components;
 pub mod mealplan;
 pub mod pantry;

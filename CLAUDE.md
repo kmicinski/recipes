@@ -97,6 +97,68 @@ meal chips, and `dayFooter` for the per-day ＋ add button.
 
 Deferred: drag-to-move meals between days (remove + re-add covers it).
 
+## Hidden recipe book & meal-builder mode (`src/book.rs` + `/book/{id}` + the deck)
+
+A large corpus of pre-generated "meal-delivery kit" style recipes — **minimal
+prep/cleanup, ~20 minutes day-of assuming one weekend batch-prep session** —
+backs a hot-or-not week builder on the plan page. Book recipes are **not part
+of the collection**: they live in a single JSONL file, never touch `content/`,
+and by construction cannot appear on the home page, in `/new`, in the meal
+picker, or in MCP `list_recipes`/`search_recipes`. They surface in exactly
+four places: the deck, `/book/{id}` pages, plan chips for picked meals (📖 +
+dashed border), and shopping-list aggregation for those meals.
+
+**Corpus:** `book/book.jsonl` (hand-authored and shipped; validated by `scripts/generate_book.py`
+with the app; `BOOK_PATH` env
+overrides; missing file = empty book and the builder button hides itself).
+One JSON object per line: `{id, title, servings, tags, protein, method,
+cuisine, ingredients:[{name,qty,unit}], body_markdown}`. Authoring rules: ids
+are sequential `bk-NNNN` (the `bk-` prefix keeps them disjoint from 6-hex-char
+recipe keys — that disjointness is what lets a book recipe masquerade as a
+`Recipe` through the whole shopping pipeline, see `book::to_recipe`/`augment`);
+tags are lowercase and comma-free; the three facet values are duplicated into
+`tags` (frontmatter has no facet keys, so that's how they survive promotion);
+bodies have `## Prep ahead` + `## Day of (~20 min)` sections; **no fish or
+seafood in any form, ever** (household rule — also no fish sauce, oyster
+sauce, Worcestershire). The corpus is cached in memory with an mtime check
+(`book::BookCache`).
+
+**Builder flow:** on a draft (unlocked) week, `📖 Build my week` opens a
+full-screen deck (templates/book.rs). Type a week prompt ("grill-heavy, use
+up the cabbage, -mushrooms"), choose how many breakfasts, lunches, and dinners
+to prep, and rapid-fire Hot/Not through a separate tagged deck for each meal type
+through candidates — buttons, ←/→ keys, or touch swipe. Matching is pure
+in-app lexical scoring (`book::rank`): weighted overlap (tag > facet > title >
+ingredient) with a small synonym table, `-token` exclusion, and deterministic
+diversity interleaving across `(protein, method)` buckets so the deck doesn't
+run same-y. A Hot POSTs `/api/book/pick`, which assigns the week's emptiest
+day server-side (`book::assign_date`) — picks are serialized client-side so
+rapid swipes can't race the plan's read-modify-write. A Not lands in a
+per-week skip list (Sled tree `book_skips`) so re-dealing doesn't repeat;
+"forget my skips" clears it. Picks carry a `meal_type` and are spread across
+the week independently by type; older saved meals default to dinner.
+
+**Promotion:** a book recipe becomes a real git-committed recipe **only** via
+"Add to my recipes" (`POST /api/book/{id}/promote`, login-gated) or the
+`promote_book_recipe` MCP tool. `book::promote` writes the markdown (facets
+folded into tags), commits, records the mapping in the `book_promotions` tree
+(idempotent; self-heals if the promoted file was later deleted), and rewrites
+every planned meal across all weeks from `book_id` → `recipe_key`
+(`mealplan::rewrite_book_refs`). `PlannedMeal` carries `book_id` alongside
+`recipe_key` (at most one set); `/recipe/bk-…` redirects to `/book/…` so trip
+source links just work.
+
+**Shop with Claude:** the plan page renders a deterministic copy-paste block
+(`shopping::claude_shop_block`) instructing Claude on the web to shop the
+week's aggregated list on Instacart at the household's preferred store —
+ALDI/Wegmans toggle persisted in `plan_settings` key `instacart_store`
+(`POST /api/plan/store`). Items come from the linked trip when there is one,
+else are aggregated live from the plan's meals (book meals included).
+
+Routes: `GET /book/{id}`, `POST /api/book/candidates` (deal the deck),
+`/api/book/pick`, `/api/book/skip`, `/api/book/skips/clear`,
+`/api/book/{id}/promote`, `POST /api/plan/store`.
+
 ## MCP server (`src/mcp.rs`)
 
 Hand-rolled JSON-RPC 2.0 over a single `POST /mcp`, modeled on `../notes/src/mcp.rs`.
@@ -117,13 +179,16 @@ No SSE — every tool call is a synchronous request/response.
 - `list_trips()` / `delete_trip(slug, confirm:true)` — published-trip management
 - `get_meal_plan(week_of?)` — the weekly plan (days with meals, brainstorm `notes`, `locked`,
   `week_start_day`, associated trip summary)
-- `plan_meal(date, recipe_key?|title?, multiplier?)` / `remove_meal(date, meal_id)` — edit the plan
+- `plan_meal(date, recipe_key?|book_id?|title?, multiplier?)` / `remove_meal(date, meal_id)` — edit the plan
 - `set_plan_notes(notes, week_of?)` — replace the week's brainstorm scratchpad (markdown)
 - `lock_plan(locked, week_of?)` — lock in / reopen the week (locked = meals surface in the UI)
 - `set_week_start_day(day)` — set the household first-day-of-week (re-buckets all plans)
 - `build_plan_trip(week_of?)` — build + activate + link the week's shopping trip; returns
   `to_buy` / `already_have`
 - `list_pantry()` / `set_pantry(name, in_pantry)` — binary pantry have/don't-have state
+- `browse_book(query?, limit?)` — rank the HIDDEN book against a week-prompt-style query (never mixes into list/search_recipes)
+- `read_book_recipe(id)` — full book recipe incl. facets, body, and promoted_key if already promoted
+- `promote_book_recipe(id, filename?)` — book → collection (git commit + plan rewrite); idempotent
 - `create_recipe(filename, title, servings?, tags?, ingredients, body)` — git-committed
 - `update_recipe(key, title, servings?, tags?, ingredients, body)` — git-committed
 - `delete_recipe(key, confirm:true)` — git rm + commit

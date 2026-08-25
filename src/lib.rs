@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 pub mod aisle;
 pub mod auth;
+pub mod book;
 pub mod handlers;
 pub mod instacart;
 pub mod mcp;
@@ -19,6 +20,7 @@ pub mod templates;
 
 pub const CONTENT_DIR: &str = "content";
 pub const DB_PATH: &str = ".recipes_db";
+pub const BOOK_PATH: &str = "book/book.jsonl";
 
 /// Shared application state.
 #[derive(Clone)]
@@ -27,6 +29,9 @@ pub struct AppState {
     pub db: Db,
     /// Bearer token for the `/mcp` endpoint. `None` disables MCP (returns 503).
     pub mcp_token: Option<String>,
+    /// The hidden recipe book corpus (JSONL). Missing file = empty book.
+    pub book_path: PathBuf,
+    pub book_cache: std::sync::Arc<book::BookCache>,
 }
 
 impl AppState {
@@ -40,15 +45,40 @@ impl AppState {
             .ok()
             .filter(|s| !s.is_empty());
 
+        let book_path = std::env::var("BOOK_PATH")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(BOOK_PATH));
+
         Self {
             content_dir,
             db,
             mcp_token,
+            book_path,
+            book_cache: Default::default(),
+        }
+    }
+
+    /// Test fixture: temp content dir + db, no book file, MCP token set.
+    /// Keeps test setups working when `AppState` grows fields.
+    pub fn for_test(content_dir: PathBuf, db: Db) -> Self {
+        Self {
+            content_dir,
+            db,
+            mcp_token: Some("test-token".to_string()),
+            book_path: PathBuf::from("/nonexistent/book.jsonl"),
+            book_cache: Default::default(),
         }
     }
 
     pub fn load_recipes(&self) -> Vec<models::Recipe> {
         recipes::load_all_recipes(&self.content_dir)
+    }
+
+    /// The hidden book corpus (cached; reloaded when the file changes).
+    pub fn load_book(&self) -> std::sync::Arc<Vec<book::BookRecipe>> {
+        book::load_book(&self.book_path, &self.book_cache)
     }
 
     pub fn recipes_map(&self) -> HashMap<String, models::Recipe> {

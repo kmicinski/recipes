@@ -532,6 +532,102 @@ pub fn build_shopping_list(
 }
 
 // ============================================================================
+// Shop-with-Claude instruction block
+// ============================================================================
+
+/// Instacart storefront the household shops at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Store {
+    Aldi,
+    Wegmans,
+}
+
+/// Parse a store name ("aldi" / "wegmans", case-insensitive).
+pub fn parse_store(s: &str) -> Result<Store, String> {
+    match s.trim().to_lowercase().as_str() {
+        "aldi" => Ok(Store::Aldi),
+        "wegmans" => Ok(Store::Wegmans),
+        other => Err(format!("Unknown store '{}': expected aldi or wegmans", other)),
+    }
+}
+
+/// Canonical lowercase name, matching what [`parse_store`] accepts.
+pub fn store_name(store: Store) -> &'static str {
+    match store {
+        Store::Aldi => "aldi",
+        Store::Wegmans => "wegmans",
+    }
+}
+
+/// Display name for prose.
+pub fn store_display(store: Store) -> &'static str {
+    match store {
+        Store::Aldi => "ALDI",
+        Store::Wegmans => "Wegmans",
+    }
+}
+
+/// Format a quantity without trailing zeros ("1.5", "2", "0.25").
+pub fn format_qty(value: f64) -> String {
+    if value.fract().abs() < f64::EPSILON {
+        format!("{}", value as i64)
+    } else {
+        format!("{:.2}", value)
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
+    }
+}
+
+/// The deterministic copy-paste block handed to Claude on the web to shop the
+/// week's list on Instacart at the chosen store. Pure text — no LLM, no API.
+pub fn claude_shop_block(store: Store, week_start: &str, items: &[ShoppingItem]) -> String {
+    let name = store_display(store);
+    let mut out = String::new();
+    out.push_str(&format!(
+        "Please shop for my week of {week} on Instacart (instacart.com) at {store}.\n\
+         Instructions: open the {store} storefront on Instacart, search for each item\n\
+         below, and add it to the cart. Prefer store-brand / lowest reasonable price.\n\
+         If a size doesn't match, round up to the nearest available size. Never\n\
+         substitute fish or seafood for anything. When you're done, tell me the cart\n\
+         total and list any substitutions you made.\n",
+        week = week_start,
+        store = name,
+    ));
+
+    let (have, to_buy): (Vec<&ShoppingItem>, Vec<&ShoppingItem>) =
+        items.iter().partition(|i| i.in_pantry);
+
+    out.push_str("\nTO BUY:\n");
+    for item in &to_buy {
+        let qty = format_qty(item.qty);
+        let unit = if item.unit.trim().is_empty() {
+            String::new()
+        } else {
+            format!(" {}", item.unit.trim())
+        };
+        let sources = if item.sources.is_empty() {
+            String::new()
+        } else {
+            format!("  (for: {})", item.sources.join(", "))
+        };
+        out.push_str(&format!("- {}{} {}{}\n", qty, unit, item.name, sources));
+    }
+    if to_buy.is_empty() {
+        out.push_str("- (nothing — everything is already in the pantry)\n");
+    }
+
+    if !have.is_empty() {
+        let names: Vec<&str> = have.iter().map(|i| i.name.as_str()).collect();
+        out.push_str(&format!(
+            "\nALREADY HAVE — do not buy: {}\n",
+            names.join(", ")
+        ));
+    }
+    out
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -1126,5 +1222,66 @@ mod tests {
         assert!(load_published(&db, &slug).is_none());
         // Deleting again reports it was already absent.
         assert!(!delete_published(&db, &slug).unwrap());
+    }
+
+    #[test]
+    fn test_parse_store_round_trip() {
+        assert_eq!(parse_store("aldi").unwrap(), Store::Aldi);
+        assert_eq!(parse_store(" Wegmans ").unwrap(), Store::Wegmans);
+        assert!(parse_store("costco").is_err());
+        assert_eq!(parse_store(store_name(Store::Wegmans)).unwrap(), Store::Wegmans);
+    }
+
+    #[test]
+    fn test_claude_shop_block_both_stores() {
+        let items = vec![
+            ShoppingItem {
+                name: "chicken thighs".into(),
+                qty: 1.5,
+                unit: "lb".into(),
+                in_pantry: false,
+                sources: vec!["Sheet-Pan Fajitas".into()],
+            },
+            ShoppingItem {
+                name: "onion".into(),
+                qty: 2.0,
+                unit: "whole".into(),
+                in_pantry: false,
+                sources: vec!["Sheet-Pan Fajitas".into(), "Chili".into()],
+            },
+            ShoppingItem {
+                name: "olive oil".into(),
+                qty: 3.0,
+                unit: "tbsp".into(),
+                in_pantry: true,
+                sources: vec!["Chili".into()],
+            },
+        ];
+        let aldi = claude_shop_block(Store::Aldi, "2026-08-24", &items);
+        assert!(aldi.contains("week of 2026-08-24"));
+        assert!(aldi.contains("at ALDI"));
+        assert!(aldi.contains("- 1.5 lb chicken thighs  (for: Sheet-Pan Fajitas)"));
+        assert!(aldi.contains("- 2 whole onion  (for: Sheet-Pan Fajitas, Chili)"));
+        assert!(aldi.contains("ALREADY HAVE — do not buy: olive oil"));
+        assert!(aldi.contains("Never"));
+        assert!(aldi.contains("substitute fish or seafood"));
+
+        let wegmans = claude_shop_block(Store::Wegmans, "2026-08-24", &items);
+        assert!(wegmans.contains("at Wegmans"));
+        assert!(!wegmans.contains("ALDI"));
+    }
+
+    #[test]
+    fn test_claude_shop_block_empty_have_omits_section() {
+        let items = vec![ShoppingItem {
+            name: "rice".into(),
+            qty: 2.0,
+            unit: "cups".into(),
+            in_pantry: false,
+            sources: vec![],
+        }];
+        let block = claude_shop_block(Store::Aldi, "2026-08-24", &items);
+        assert!(!block.contains("ALREADY HAVE"));
+        assert!(block.contains("- 2 cups rice\n"));
     }
 }

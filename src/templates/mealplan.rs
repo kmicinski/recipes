@@ -11,7 +11,7 @@
 use crate::mealplan::{weekday_name, MealPlan};
 use crate::models::Recipe;
 use crate::recipes::html_escape;
-use crate::shopping::SavedTrip;
+use crate::shopping::{SavedTrip, Store};
 use chrono::{NaiveDate, Weekday};
 
 use super::components::base_html;
@@ -185,12 +185,47 @@ fn notes_html(plan: &MealPlan) -> (String, String) {
     }
 }
 
+/// The Shop-with-Claude panel: store toggle + the deterministic copy-paste
+/// block for Claude on the web to shop the list on Instacart. Empty when the
+/// week has nothing to shop for yet.
+fn shop_claude_panel_html(store: Store, shop_block: Option<&str>) -> String {
+    let Some(block) = shop_block else {
+        return String::new();
+    };
+    let (aldi_cls, wegmans_cls) = match store {
+        Store::Aldi => (" active", ""),
+        Store::Wegmans => ("", " active"),
+    };
+    format!(
+        r#"<div class="plan-trip-panel claude-shop-panel">
+    <div class="claude-shop-head">
+        <h2>🤖 Shop with Claude</h2>
+        <div class="store-toggle">
+            <button class="store-pill{aldi_cls}" onclick="setStore('aldi')">ALDI</button>
+            <button class="store-pill{wegmans_cls}" onclick="setStore('wegmans')">Wegmans</button>
+        </div>
+    </div>
+    <p class="plan-trip-hint">Paste this into Claude on the web and it'll shop the week's list
+       on Instacart at your store.</p>
+    <textarea id="claude-shop-text" class="claude-shop-block" readonly rows="10">{block}</textarea>
+    <button class="btn small" onclick="copyShopBlock(this)">📋 Copy for Claude</button>
+</div>"#,
+        aldi_cls = aldi_cls,
+        wegmans_cls = wegmans_cls,
+        block = html_escape(block),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn render_plan_page(
     plan: &MealPlan,
     recipes: &[Recipe],
     linked_trip: Option<&SavedTrip>,
     recent_trips: &[SavedTrip],
     week_start_day: Weekday,
+    store: Store,
+    shop_block: Option<&str>,
+    book_count: usize,
     logged_in: bool,
 ) -> String {
     // Meals bucketed by date for the calendar.
@@ -219,6 +254,31 @@ pub fn render_plan_page(
     let (locked_bar, notes_block) = notes_html(plan);
     let notes_json = script_json(&plan.notes);
 
+    // The hot-or-not meal-builder deck, fed by the hidden book. Only offered
+    // while the week is a draft and a book corpus is actually loaded.
+    let show_builder = !plan.locked && book_count > 0;
+    let builder_bar = if show_builder {
+        format!(
+            r#"<div class="plan-builder-bar">
+    <button class="btn" onclick="openDeck()">📖 Build my week</button>
+    <span class="plan-builder-hint">Rapid-fire picks from a book of {count} meal-kit recipes — prep once, ~20 min day-of.</span>
+</div>"#,
+            count = book_count,
+        )
+    } else {
+        String::new()
+    };
+    let deck_overlay = if show_builder {
+        super::book::deck_overlay_html().to_string()
+    } else {
+        String::new()
+    };
+    let deck_script = if show_builder {
+        super::book::deck_script(&plan.week_start)
+    } else {
+        String::new()
+    };
+
     let content = format!(
         r#"<style>{kcal_css}</style>
 <div class="plan-page">
@@ -235,10 +295,13 @@ pub fn render_plan_page(
         </div>
     </div>
     {locked_bar}
+    {builder_bar}
     {notes_block}
     <div id="plan-cal"></div>
     {trip_panel}
+    {claude_panel}
 </div>
+{deck_overlay}
 
 <div id="meal-picker" class="meal-picker" hidden>
     <div class="meal-picker-card">
@@ -272,22 +335,27 @@ pub fn render_plan_page(
         }});
     }}
 
-    // Stable pastel hue per meal from its recipe key (or title for free text),
+    // Stable pastel hue per meal from its recipe key (or book id / title),
     // so the same dish is the same color week after week.
     function hueOf(meal) {{
-        var s = meal.recipe_key || meal.title, h = 5381;
+        var s = meal.recipe_key || meal.book_id || meal.title, h = 5381;
         for (var i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
         return h % 360;
     }}
 
     function mealChip(meal) {{
+        var kind = meal.meal_type && meal.meal_type !== 'dinner'
+            ? '<span class="meal-kind">' + esc(meal.meal_type) + '</span>' : '';
         var mult = meal.multiplier && meal.multiplier !== 1
             ? '<span class="meal-mult">×' + esc(meal.multiplier) + '</span>' : '';
         var title = meal.recipe_key
             ? '<a href="/recipe/' + encodeURIComponent(meal.recipe_key) + '">' + esc(meal.title) + '</a>'
+            : meal.book_id
+            ? '<a href="/book/' + encodeURIComponent(meal.book_id) + '">📖 ' + esc(meal.title) + '</a>'
             : esc(meal.title);
-        return '<div class="meal-chip" style="--chip:hsl(' + hueOf(meal) + ' 45% 45%)">' +
-            '<span class="meal-chip-title">' + title + '</span>' + mult +
+        var cls = meal.book_id ? 'meal-chip meal-chip-book' : 'meal-chip';
+        return '<div class="' + cls + '" style="--chip:hsl(' + hueOf(meal) + ' 45% 45%)">' +
+            kind + '<span class="meal-chip-title">' + title + '</span>' + mult +
             '<button class="meal-remove" title="Remove" ' +
             'onclick="removeMeal(\'' + esc(meal.date) + '\',\'' + esc(meal.id) + '\')">×</button></div>';
     }}
@@ -417,8 +485,31 @@ pub fn render_plan_page(
             .then(function() {{ location.href = '/plan'; }})
             .catch(function(e) {{ alert(e.message); location.reload(); }});
     }};
+
+    // ---- Shop-with-Claude panel ----
+    window.setStore = function(store) {{
+        post('/api/plan/store', {{ store: store }})
+            .then(function() {{ location.reload(); }})
+            .catch(function(e) {{ alert(e.message); }});
+    }};
+    window.copyShopBlock = function(btn) {{
+        var ta = document.getElementById('claude-shop-text');
+        if (!ta) return;
+        var done = function() {{
+            var old = btn.textContent;
+            btn.textContent = '✓ Copied';
+            setTimeout(function() {{ btn.textContent = old; }}, 1500);
+        }};
+        if (navigator.clipboard && navigator.clipboard.writeText) {{
+            navigator.clipboard.writeText(ta.value).then(done);
+        }} else {{
+            ta.focus(); ta.select();
+            try {{ document.execCommand('copy'); done(); }} catch (e) {{}}
+        }}
+    }};
 }})();
-</script>"#,
+</script>
+{deck_script}"#,
         kcal_css = KCAL_CSS,
         kcal_js = KCAL_JS,
         week = week,
@@ -427,12 +518,16 @@ pub fn render_plan_page(
         next = html_escape(&next),
         week_start_select = week_start_select_html(week_start_day),
         locked_bar = locked_bar,
+        builder_bar = builder_bar,
         notes_block = notes_block,
         notes_json = notes_json,
         ws_num = week_start_day.num_days_from_sunday(),
         meals_json = meals_json,
         recipes_json = recipes_json,
         trip_panel = trip_panel_html(plan, linked_trip, recent_trips),
+        claude_panel = shop_claude_panel_html(store, shop_block),
+        deck_overlay = deck_overlay,
+        deck_script = deck_script,
     );
 
     base_html("Meal Plan", &content, logged_in)

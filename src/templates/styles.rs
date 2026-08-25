@@ -1144,6 +1144,218 @@ h1 { font-size: 1.5rem; }
 .meal-picker-custom { display: flex; gap: 0.4rem; }
 .meal-picker-custom input { flex: 1; }
 
+/* ---- Hidden recipe book & meal-builder deck ---- */
+
+.plan-builder-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    border: 1px dashed var(--border);
+    border-radius: 10px;
+    padding: 0.6rem 0.8rem;
+    margin-bottom: 1rem;
+    background: var(--base3);
+}
+.plan-builder-hint { color: var(--muted); font-size: 0.85rem; }
+
+.book-page-note {
+    color: var(--muted);
+    font-size: 0.9rem;
+    border-left: 3px dashed var(--border);
+    padding-left: 0.6rem;
+    margin-top: 0;
+}
+.book-promoted-note { color: var(--green); font-weight: 600; }
+
+/* Book meals on the plan board / home strip: visibly "not yet yours". */
+.meal-chip-book { border-left: 3px dashed var(--chip); }
+.week-strip-book { border-left: 2px dashed var(--border); padding-left: 0.3rem; }
+
+/* Hot-or-not deck overlay (same overlay model as the meal picker). */
+.book-deck {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 43, 54, 0.45);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 110;
+    padding: 1rem;
+}
+.book-deck[hidden] { display: none; }
+.book-deck-inner {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1rem;
+    width: 100%;
+    max-width: 28rem;
+    max-height: 90vh;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+}
+.deck-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+}
+.deck-head h2 { margin: 0; font-size: 1rem; }
+.deck-hint { color: var(--muted); font-size: 0.85rem; margin: 0; }
+#deck-prompt {
+    width: 100%;
+    box-sizing: border-box;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.5rem 0.6rem;
+    font-family: inherit;
+    font-size: 0.9rem;
+    background: var(--base3);
+    color: var(--fg);
+    resize: vertical;
+}
+.deck-setup-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+}
+.deck-meal-counts {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.55rem;
+}
+.deck-meal-counts .deck-count-label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+.meal-kind {
+    display: inline-block;
+    margin-right: 0.3rem;
+    padding: 0.08rem 0.3rem;
+    border-radius: 999px;
+    background: var(--base2);
+    color: var(--muted);
+    font-size: 0.68rem;
+    text-transform: capitalize;
+}
+@media (max-width: 520px) {
+    .deck-meal-counts { grid-template-columns: 1fr; }
+}
+.deck-count-label { color: var(--muted); font-size: 0.85rem; }
+.deck-count-label select {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.25rem 0.4rem;
+    background: var(--base3);
+    color: var(--fg);
+    font-family: inherit;
+}
+.deck-progress { color: var(--muted); font-size: 0.85rem; }
+.deck-card-zone {
+    min-height: 14rem;
+    display: flex;
+    align-items: stretch;
+    justify-content: center;
+    overflow: hidden;
+}
+.book-deck-card {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--base3);
+    padding: 1rem;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    touch-action: pan-y;
+    user-select: none;
+}
+.deck-card-title { font-size: 1.15rem; font-weight: 700; }
+.deck-card-facets { color: var(--cyan); font-size: 0.85rem; }
+.deck-card-tags { display: flex; flex-wrap: wrap; gap: 0.25rem; }
+.deck-card-ings { color: var(--muted); font-size: 0.9rem; line-height: 1.5; }
+.deck-card-view { font-size: 0.8rem; margin-top: auto; }
+.deck-actions {
+    display: flex;
+    gap: 0.75rem;
+    justify-content: center;
+}
+.deck-btn {
+    flex: 1;
+    max-width: 10rem;
+    border: none;
+    border-radius: 10px;
+    padding: 0.7rem 1rem;
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: #fdf6e3;
+    cursor: pointer;
+}
+.deck-btn-not { background: var(--red); }
+.deck-btn-hot { background: var(--green); }
+.deck-btn:hover { filter: brightness(1.1); }
+.deck-foot { color: var(--muted); font-size: 0.8rem; min-height: 1.1rem; text-align: center; }
+.deck-link {
+    background: none;
+    border: none;
+    color: var(--link);
+    cursor: pointer;
+    font-size: 0.8rem;
+    text-decoration: underline;
+}
+.deck-summary { display: flex; flex-direction: column; gap: 0.3rem; }
+.deck-summary-row { font-size: 0.9rem; }
+.deck-summary-day {
+    display: inline-block;
+    min-width: 6.5rem;
+    color: var(--muted);
+}
+
+/* Shop-with-Claude panel */
+.claude-shop-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+.claude-shop-head h2 { margin: 0; }
+.store-toggle { display: flex; gap: 0.3rem; }
+.store-pill {
+    border: 1px solid var(--border);
+    background: var(--base3);
+    color: var(--muted);
+    border-radius: 999px;
+    padding: 0.25rem 0.8rem;
+    font-size: 0.85rem;
+    cursor: pointer;
+}
+.store-pill.active {
+    background: var(--cyan);
+    border-color: var(--cyan);
+    color: #fdf6e3;
+    font-weight: 600;
+}
+.claude-shop-block {
+    width: 100%;
+    box-sizing: border-box;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--base3);
+    color: var(--fg);
+    font-family: 'SF Mono', SFMono-Regular, Consolas, monospace;
+    font-size: 0.78rem;
+    line-height: 1.45;
+    padding: 0.6rem;
+    resize: vertical;
+}
+
 @media print {
     .nav-bar, .fab, .btn, .mode-toggle, .back-link, .pantry-badge { display: none !important; }
     .container { max-width: 100%; padding: 0; }

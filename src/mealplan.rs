@@ -17,6 +17,7 @@
 //! Storage follows the `shopping.rs` pattern: serde-JSON blobs in a dedicated
 //! Sled tree (`meal_plans`).
 
+use crate::book::BookRecipe;
 use crate::models::{Recipe, RecipeSelection};
 use crate::shopping;
 use chrono::{Datelike, Duration, NaiveDate, Weekday};
@@ -26,9 +27,23 @@ use sled::Db;
 const PLANS_TREE: &str = "meal_plans";
 const SETTINGS_TREE: &str = "plan_settings";
 const WEEK_START_KEY: &str = "week_start_day";
+const STORE_KEY: &str = "instacart_store";
 
 fn default_multiplier() -> f64 {
     1.0
+}
+
+fn default_meal_type() -> String {
+    "dinner".to_string()
+}
+
+pub fn normalize_meal_type(value: &str) -> Result<&'static str, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "breakfast" => Ok("breakfast"),
+        "lunch" => Ok("lunch"),
+        "dinner" | "meal" | "" => Ok("dinner"),
+        _ => Err("Meal type must be breakfast, lunch, or dinner".to_string()),
+    }
 }
 
 /// One planned meal on a specific day.
@@ -45,9 +60,18 @@ pub struct PlannedMeal {
     /// Present when the meal is a recipe from the collection.
     #[serde(default)]
     pub recipe_key: Option<String>,
+    /// Present when the meal is a hidden-book recipe (id like `bk-0001`) that
+    /// hasn't been promoted into the collection. At most one of `recipe_key`
+    /// and `book_id` is set; promotion rewrites `book_id` → `recipe_key`.
+    #[serde(default)]
+    pub book_id: Option<String>,
     /// Servings multiplier, used when building a shopping trip from the plan.
     #[serde(default = "default_multiplier")]
     pub multiplier: f64,
+    /// Calendar lane used by the week builder. Defaults to dinner for plans
+    /// saved before breakfast/lunch planning was introduced.
+    #[serde(default = "default_meal_type")]
+    pub meal_type: String,
 }
 
 /// A week's meal plan. The Sled key is `week_start`.
@@ -286,22 +310,70 @@ pub fn add_meal(
     title: Option<&str>,
     multiplier: f64,
 ) -> Result<MealPlan, String> {
+    add_meal_entry(db, recipes, &[], date, recipe_key, None, title, multiplier)
+}
+
+/// [`add_meal`] with hidden-book support: exactly one of `recipe_key`
+/// (validated against `recipes`), `book_id` (validated against `book`), or a
+/// non-empty free-text `title` identifies the meal; titles are snapshotted.
+#[allow(clippy::too_many_arguments)]
+pub fn add_meal_entry(
+    db: &Db,
+    recipes: &[Recipe],
+    book: &[BookRecipe],
+    date: &str,
+    recipe_key: Option<&str>,
+    book_id: Option<&str>,
+    title: Option<&str>,
+    multiplier: f64,
+) -> Result<MealPlan, String> {
+    add_meal_entry_typed(
+        db, recipes, book, date, recipe_key, book_id, title, multiplier, "dinner",
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn add_meal_entry_typed(
+    db: &Db,
+    recipes: &[Recipe],
+    book: &[BookRecipe],
+    date: &str,
+    recipe_key: Option<&str>,
+    book_id: Option<&str>,
+    title: Option<&str>,
+    multiplier: f64,
+    meal_type: &str,
+) -> Result<MealPlan, String> {
     let week = week_of(db, date)?;
-    let (resolved_key, resolved_title) = match recipe_key.filter(|k| !k.trim().is_empty()) {
-        Some(key) => {
+    let meal_type = normalize_meal_type(meal_type)?;
+    let recipe_key = recipe_key.filter(|k| !k.trim().is_empty());
+    let book_id = book_id.filter(|b| !b.trim().is_empty());
+    if recipe_key.is_some() && book_id.is_some() {
+        return Err("A meal takes a recipe_key or a book_id, not both".to_string());
+    }
+    let (resolved_key, resolved_book, resolved_title) = match (recipe_key, book_id) {
+        (Some(key), None) => {
             let recipe = recipes
                 .iter()
                 .find(|r| r.key == key)
                 .ok_or_else(|| format!("Unknown recipe key: {}", key))?;
-            (Some(recipe.key.clone()), recipe.title.clone())
+            (Some(recipe.key.clone()), None, recipe.title.clone())
         }
-        None => {
+        (None, Some(id)) => {
+            let b = book
+                .iter()
+                .find(|b| b.id == id)
+                .ok_or_else(|| format!("Unknown book recipe: {}", id))?;
+            (None, Some(b.id.clone()), b.title.clone())
+        }
+        (None, None) => {
             let t = title.map(str::trim).unwrap_or_default();
             if t.is_empty() {
-                return Err("A meal needs a recipe_key or a title".to_string());
+                return Err("A meal needs a recipe_key, book_id, or title".to_string());
             }
-            (None, t.to_string())
+            (None, None, t.to_string())
         }
+        (Some(_), Some(_)) => unreachable!("checked above"),
     };
 
     let mut plan = load_plan(db, &week);
@@ -315,10 +387,42 @@ pub fn add_meal(
         date: date.to_string(),
         title: resolved_title,
         recipe_key: resolved_key,
+        book_id: resolved_book,
         multiplier: if multiplier > 0.0 { multiplier } else { 1.0 },
+        meal_type: meal_type.to_string(),
     });
     save_plan(db, &mut plan)?;
     Ok(plan)
+}
+
+/// Rewrite every planned meal (across all stored weeks) referencing `book_id`
+/// to reference the promoted recipe `new_key` instead. Returns the number of
+/// meals rewritten. Called by [`crate::book::promote`].
+pub fn rewrite_book_refs(db: &Db, book_id: &str, new_key: &str) -> Result<usize, String> {
+    let tree = db
+        .open_tree(PLANS_TREE)
+        .map_err(|e| format!("DB error: {}", e))?;
+    let mut rewritten = 0;
+    let plans: Vec<MealPlan> = tree
+        .iter()
+        .filter_map(|kv| kv.ok())
+        .filter_map(|(_, v)| serde_json::from_slice(&v).ok())
+        .collect();
+    for mut plan in plans {
+        let mut touched = false;
+        for meal in &mut plan.meals {
+            if meal.book_id.as_deref() == Some(book_id) {
+                meal.book_id = None;
+                meal.recipe_key = Some(new_key.to_string());
+                touched = true;
+                rewritten += 1;
+            }
+        }
+        if touched {
+            save_plan(db, &mut plan)?;
+        }
+    }
+    Ok(rewritten)
 }
 
 /// Remove a meal by id from the week containing `date`. Returns the updated
@@ -369,13 +473,14 @@ pub fn link_trip(db: &Db, week_start: &str, trip_id: Option<&str>) -> Result<Mea
     Ok(plan)
 }
 
-/// The plan's recipe-backed meals as shopping-list selections, with
-/// multipliers summed per recipe.
+/// The plan's recipe- and book-backed meals as shopping-list selections, with
+/// multipliers summed per key. Book meals use their `bk-…` id as the key;
+/// resolve them via [`crate::book::augment`].
 pub fn plan_selections(plan: &MealPlan) -> Vec<RecipeSelection> {
     let mut order: Vec<String> = Vec::new();
     let mut by_key: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
     for meal in &plan.meals {
-        if let Some(key) = &meal.recipe_key {
+        if let Some(key) = meal.recipe_key.as_ref().or(meal.book_id.as_ref()) {
             if !by_key.contains_key(key) {
                 order.push(key.clone());
             }
@@ -391,11 +496,13 @@ pub fn plan_selections(plan: &MealPlan) -> Vec<RecipeSelection> {
         .collect()
 }
 
-/// Build a shopping trip from the week's recipe-backed meals, make it the
-/// active trip, and associate it with the plan. Returns the new trip's id.
+/// Build a shopping trip from the week's recipe- and book-backed meals, make
+/// it the active trip, and associate it with the plan. Returns the new trip's
+/// id.
 pub fn build_trip_for_week(
     db: &Db,
     recipes: &[Recipe],
+    book: &[BookRecipe],
     week_start: &str,
 ) -> Result<String, String> {
     let week = week_of(db, week_start)?;
@@ -404,12 +511,33 @@ pub fn build_trip_for_week(
     if selections.is_empty() {
         return Err("No recipe-based meals planned this week — add some first".to_string());
     }
-    let items = shopping::build_shopping_list(&selections, recipes, db);
-    let trip_recipes = shopping::resolve_trip_recipes(&selections, recipes);
+    let all = crate::book::augment(recipes, book, &selections);
+    let items = shopping::build_shopping_list(&selections, &all, db);
+    let trip_recipes = shopping::resolve_trip_recipes(&selections, &all);
     let trip_id = shopping::save_trip(db, &items, &trip_recipes)?;
     shopping::set_active_trip(db, &trip_id).ok();
     link_trip(db, &week, Some(&trip_id))?;
     Ok(trip_id)
+}
+
+/// The household's preferred Instacart store for the Shop-with-Claude block.
+pub fn preferred_store(db: &Db) -> shopping::Store {
+    db.open_tree(SETTINGS_TREE)
+        .ok()
+        .and_then(|t| t.get(STORE_KEY).ok().flatten())
+        .and_then(|v| String::from_utf8(v.to_vec()).ok())
+        .and_then(|s| shopping::parse_store(&s).ok())
+        .unwrap_or(shopping::Store::Aldi)
+}
+
+/// Persist the preferred Instacart store (household-wide, like the week
+/// start day).
+pub fn set_preferred_store(db: &Db, store: shopping::Store) -> Result<(), String> {
+    db.open_tree(SETTINGS_TREE)
+        .map_err(|e| format!("DB error: {}", e))?
+        .insert(STORE_KEY, shopping::store_name(store).as_bytes())
+        .map_err(|e| format!("DB error: {}", e))?;
+    Ok(())
 }
 
 // ============================================================================
@@ -592,6 +720,22 @@ mod tests {
     }
 
     #[test]
+    fn typed_meals_validate_and_persist() {
+        let (_dir, db) = temp_db();
+        let plan = add_meal_entry_typed(
+            &db, &[], &[], "2026-07-13", None, None, Some("Oats"), 1.0,
+            "breakfast",
+        )
+        .unwrap();
+        assert_eq!(plan.meals[0].meal_type, "breakfast");
+        assert!(add_meal_entry_typed(
+            &db, &[], &[], "2026-07-14", None, None, Some("Snack"), 1.0,
+            "snack",
+        )
+        .is_err());
+    }
+
+    #[test]
     fn remove_meal_by_id() {
         let (_dir, db) = temp_db();
         let plan = add_meal(&db, &[], "2026-07-14", None, Some("Tacos"), 1.0).unwrap();
@@ -638,10 +782,10 @@ mod tests {
         let recipes = vec![recipe("aaa", "Lasagna", vec![("pasta", 1.0, "lb")])];
 
         // Empty plan → refuse.
-        assert!(build_trip_for_week(&db, &recipes, "2026-07-13").is_err());
+        assert!(build_trip_for_week(&db, &recipes, &[], "2026-07-13").is_err());
 
         add_meal(&db, &recipes, "2026-07-14", Some("aaa"), None, 2.0).unwrap();
-        let trip_id = build_trip_for_week(&db, &recipes, "2026-07-15").unwrap();
+        let trip_id = build_trip_for_week(&db, &recipes, &[], "2026-07-15").unwrap();
 
         let trip = shopping::load_trip(&db, &trip_id).unwrap();
         assert_eq!(trip.items.len(), 1);

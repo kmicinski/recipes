@@ -56,6 +56,26 @@ async fn main() {
             "/api/plan/week-start",
             axum::routing::post(handlers::plan_set_week_start),
         )
+        .route(
+            "/api/plan/store",
+            axum::routing::post(handlers::plan_set_store),
+        )
+        // Hidden recipe book + hot-or-not meal-builder deck
+        .route("/book/{id}", get(handlers::view_book_recipe))
+        .route(
+            "/api/book/candidates",
+            axum::routing::post(handlers::book_candidates),
+        )
+        .route("/api/book/pick", axum::routing::post(handlers::book_pick))
+        .route("/api/book/skip", axum::routing::post(handlers::book_skip))
+        .route(
+            "/api/book/skips/clear",
+            axum::routing::post(handlers::book_skips_clear),
+        )
+        .route(
+            "/api/book/{id}/promote",
+            axum::routing::post(handlers::promote_book_recipe_api),
+        )
         // Shopping routes
         .route("/shopping", get(handlers::shopping_page))
         .route(

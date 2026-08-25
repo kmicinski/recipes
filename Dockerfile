@@ -13,6 +13,7 @@ RUN groupadd -g 1000 app && useradd -u 1000 -g app -s /bin/bash -m app
 
 WORKDIR /app
 COPY --from=builder /build/target/release/recipes /app/recipes
+COPY book /app/book
 
 RUN chown -R app:app /app
 USER app
